@@ -1,0 +1,80 @@
+version: '3'
+
+services:
+  litellm-db:
+    image: postgres:15-alpine
+    container_name: litellm-db
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm_password}
+      - POSTGRES_DB=litellm
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - litellm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.80.6-nightly
+    container_name: litellm
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm_password}@litellm-db:5432/litellm
+      - REDIS_URL=redis://litellm-redis:6379
+      - LITELLM_CONFIG=/app/litellm_config.yaml
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - UI=true
+      - ADMIN_UI=true
+      - LOG_REQUESTS=true
+      - STORE_MODEL_IN_DB=true
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-change-this-to-a-random-string}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-nftgo-1234-abcd}
+      - LITELLM_LOG=INFO
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://signoz-otel-collector:4317
+      - OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=litellm
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=otlp
+      - OTEL_LOGS_EXPORTER=otlp
+    volumes:
+      - litellm-data:/app/litellm
+      - ./configs/litellm_config.yaml:/app/litellm_config.yaml:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+      litellm-redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - litellm-network
+
+  litellm-redis:
+    image: redis:7-alpine
+    container_name: litellm-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - litellm-redis-data:/data
+    networks:
+      - litellm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  litellm-data:
+  litellm-db-data:
+  litellm-redis-data:
+
+networks:
+  litellm-network:
+    driver: bridge

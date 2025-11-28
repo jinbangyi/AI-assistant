@@ -1,0 +1,10 @@
+-- n8n PostgreSQL Database Initialization Script
+-- This is an example file. If you need custom database initialization,
+-- copy this file to n8n-init-db.sql and customize it.
+-- 
+-- Note: n8n will create its own tables automatically, so this file is
+-- only needed if you want to run custom SQL on database initialization.
+
+-- Example: Create additional schemas or extensions
+-- CREATE SCHEMA IF NOT EXISTS custom_schema;
+-- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

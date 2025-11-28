@@ -1,0 +1,111 @@
+{
+  "name": "AI Assistant Development Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dify-api",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true,
+      "username": "vscode",
+      "uid": "1000",
+      "gid": "1000"
+    },
+    "ghcr.io/devcontainers/features/git:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "ms-vscode.vscode-json"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "files.exclude": {
+          "**/.git": true,
+          "**/.DS_Store": true
+        }
+      }
+    }
+  },
+
+  "forwardPorts": [
+    3000,
+    4000,
+    5001,
+    5678,
+    5679,
+    6379,
+    6380,
+    8080,
+    3301,
+    4317,
+    4318
+  ],
+
+  "portsAttributes": {
+    "3000": {
+      "label": "Dify Web UI",
+      "onAutoForward": "notify"
+    },
+    "4000": {
+      "label": "LiteLLM",
+      "onAutoForward": "notify"
+    },
+    "5001": {
+      "label": "Dify API",
+      "onAutoForward": "notify"
+    },
+    "5678": {
+      "label": "n8n Server",
+      "onAutoForward": "notify"
+    },
+    "5679": {
+      "label": "n8n Webhook",
+      "onAutoForward": "notify"
+    },
+    "6379": {
+      "label": "Redis (Dify)",
+      "onAutoForward": "silent"
+    },
+    "6380": {
+      "label": "Redis (LiteLLM)",
+      "onAutoForward": "silent"
+    },
+    "8080": {
+      "label": "Open WebUI",
+      "onAutoForward": "notify"
+    },
+    "3301": {
+      "label": "SigNoz UI",
+      "onAutoForward": "notify"
+    },
+    "4317": {
+      "label": "SigNoz OTLP gRPC",
+      "onAutoForward": "silent"
+    },
+    "4318": {
+      "label": "SigNoz OTLP HTTP",
+      "onAutoForward": "silent"
+    }
+  },
+
+  "postCreateCommand": "echo 'Development container ready! Services: Dify (3000, 5001), Open WebUI (8080), LiteLLM (4000), n8n (5678, 5679), SigNoz (3301, 4317, 4318)'",
+  
+  "remoteUser": "vscode"
+}

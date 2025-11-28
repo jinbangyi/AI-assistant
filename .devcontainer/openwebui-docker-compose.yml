@@ -1,0 +1,26 @@
+version: '3'
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-secret-key-change-in-production}
+      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-}
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-gpt-3.5-turbo,gpt-4}
+      - ENABLE_SIGNUP=true
+      - ENABLE_COMMUNITY_SHARING=false
+    restart: unless-stopped
+    networks:
+      - openwebui-network
+
+volumes:
+  open-webui-data:
+
+networks:
+  openwebui-network:
+    driver: bridge

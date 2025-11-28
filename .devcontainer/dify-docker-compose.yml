@@ -1,0 +1,92 @@
+version: '3'
+
+services:
+  dify-api:
+    image: langgenius/dify-api:latest
+    container_name: dify-api
+    ports:
+      - "5001:5001"
+    environment:
+      - MODE=api
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-sk-xxxxx}
+      - DATABASE_URL=postgresql://postgres:postgres@dify-db:5432/dify
+      - REDIS_HOST=dify-redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://dify-redis:6379/1
+      - WEB_API_CORS_ALLOW_ORIGINS=*
+    volumes:
+      - ./storage:/app/api/storage
+    depends_on:
+      - dify-db
+      - dify-redis
+    networks:
+      - dify-network
+
+  dify-web:
+    image: langgenius/dify-web:latest
+    container_name: dify-web
+    ports:
+      - "3000:3000"
+    environment:
+      - CONSOLE_API_URL=http://dify-api:5001
+      - APP_API_URL=http://dify-api:5001
+      - APP_WEB_URL=http://localhost:3000
+    depends_on:
+      - dify-api
+    networks:
+      - dify-network
+
+  dify-worker:
+    image: langgenius/dify-api:latest
+    container_name: dify-worker
+    command: celery -A app.celery worker -P gevent -c 1 --loglevel INFO -Q dataset,generation,mail
+    environment:
+      - MODE=worker
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-sk-xxxxx}
+      - DATABASE_URL=postgresql://postgres:postgres@dify-db:5432/dify
+      - REDIS_HOST=dify-redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://dify-redis:6379/1
+    volumes:
+      - ./storage:/app/api/storage
+    depends_on:
+      - dify-db
+      - dify-redis
+    networks:
+      - dify-network
+
+  dify-db:
+    image: postgres:15-alpine
+    container_name: dify-db
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=dify
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - dify-db-data:/var/lib/postgresql/data
+    networks:
+      - dify-network
+
+  dify-redis:
+    image: redis:7-alpine
+    container_name: dify-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - dify-redis-data:/data
+    networks:
+      - dify-network
+
+volumes:
+  dify-db-data:
+  dify-redis-data:
+
+networks:
+  dify-network:
+    driver: bridge

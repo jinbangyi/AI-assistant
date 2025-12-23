@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: prefect
       POSTGRES_DB: prefect
     volumes:
-      - prefect-postgres-data:/var/lib/postgresql/data
+      - /home/coder/data/AI-assistant/prefect-postgres-data:/var/lib/postgresql/data
     ports:
       - "${PREFECT_DB_PORT:-5435}:5432"
     healthcheck:
@@ -114,6 +114,7 @@ services:
       BATCH_SIZE: ${BATCH_SIZE:-10000}
       HEALTH_CHECK_PORT: ${HEALTH_CHECK_PORT:-8093}
       TRADES_DB_URL: postgresql+psycopg2://prefect:prefect@postgres:5432/prefect
+      TRADES_SCHEMA: ${TRADES_SCHEMA:-hyperliquid_continuous}
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,8 +158,6 @@ services:
       - prefect-network
 
 volumes:
-  prefect-postgres-data:
-    driver: local
   prefect-data:
     driver: local
   pgadmin-data:

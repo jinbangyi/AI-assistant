@@ -7,6 +7,7 @@ A never-stop multi-coin trade subscriber with:
 - Graceful shutdown via SIGTERM/SIGINT
 - Automatic reconnection with exponential backoff
 - Health monitoring endpoint
+- Separate schema (hyperliquid_continuous) from flow-based subscriber
 
 Environment Variables:
 - HYPERLIQUID_COINS: Comma-separated list of coins (default: "ETH,SOL")
@@ -14,6 +15,7 @@ Environment Variables:
 - BATCH_SIZE: Maximum trades per batch (default: 10000)
 - HEALTH_CHECK_PORT: Health check HTTP server port (default: 8080)
 - TRADES_DB_URL: Database connection URL (default: prefect PostgreSQL)
+- TRADES_SCHEMA: Database schema name (default: hyperliquid_continuous)
 """
 
 import argparse
@@ -32,7 +34,7 @@ from typing import List
 
 import websocket
 
-from db import init_db, save_trades
+from db_continuous import init_db, save_trades, TRADES_SCHEMA
 
 
 # ============== Configuration ==============
@@ -463,6 +465,7 @@ def main():
     logger.info(f"  Batch size: {batch_size}")
     logger.info(f"  Health check port: {health_port}")
     logger.info(f"  Database URL: {TRADES_DB_URL}")
+    logger.info(f"  Schema: {TRADES_SCHEMA}")
     logger.info("=" * 60)
 
     # Initialize database

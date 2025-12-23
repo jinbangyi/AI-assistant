@@ -1,15 +1,12 @@
 """
-Database module for storing Hyperliquid trades (flow-based subscriber).
+Database module for the Continuous Hyperliquid Trade Subscriber.
 
-Uses PostgreSQL (same as Prefect) with auto-creation of tables.
-Uses schema: hyperliquid_trades
-Data can be viewed in pgAdmin web UI.
-
-Note: The continuous subscriber uses db_continuous.py with schema hyperliquid_continuous.
+Uses a separate schema (hyperliquid_continuous) from the flow-based subscriber
+to allow independent operation.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from decimal import Decimal
 
@@ -20,12 +17,11 @@ import logging
 
 
 # PostgreSQL connection URL - can be overridden via environment
-# Defaults to the same PostgreSQL as Prefect
 DEFAULT_DB_URL = "postgresql+psycopg2://prefect:prefect@postgres:5432/prefect"
 DB_URL = os.environ.get("TRADES_DB_URL", DEFAULT_DB_URL)
 
-# Schema name for trades tables (separate from Prefect tables)
-TRADES_SCHEMA = "hyperliquid_trades"
+# Schema name for continuous subscriber tables (separate from flow-based)
+TRADES_SCHEMA = os.environ.get("TRADES_SCHEMA", "hyperliquid_continuous")
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -50,7 +46,7 @@ class Trade(Base):
     trade_id: Mapped[int] = mapped_column(BigInteger, index=True, unique=True)
     tx_hash: Mapped[str] = mapped_column(String(255))
     users: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __repr__(self) -> str:
         return f"<Trade(id={self.id}, coin={self.coin}, side={self.side}, price={self.price}, size={self.size})>"
@@ -61,13 +57,13 @@ def get_engine(db_url: str = DB_URL):
     return create_engine(db_url, echo=False)
 
 
-def init_db(db_url: str = DB_URL) -> None:
+def init_db(db_url: str = DB_URL, schema: str = TRADES_SCHEMA) -> None:
     """Initialize database - create schema and tables."""
     engine = get_engine(db_url)
 
     # Create schema if it doesn't exist
     with engine.connect() as conn:
-        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {TRADES_SCHEMA}"))
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
         conn.commit()
 
     # Create tables
@@ -80,17 +76,22 @@ def get_session(db_url: str = DB_URL) -> Session:
     return Session(engine)
 
 
-def save_trade(trade_data: dict, db_url: str = DB_URL) -> Trade:
+def save_trade(trade_data: dict, db_url: str = DB_URL, schema: str = TRADES_SCHEMA) -> Trade:
     """
     Save a single trade to the database.
 
     Args:
         trade_data: Dictionary containing trade information
         db_url: Database connection URL
+        schema: Schema name
 
     Returns:
         The created Trade object
     """
+    # Import Trade with dynamic schema
+    from sqlalchemy import Table, MetaData
+    # ... (single insert not commonly used in continuous subscriber)
+
     with get_session(db_url) as session:
         trade = Trade(
             coin=trade_data["coin"],
@@ -108,7 +109,7 @@ def save_trade(trade_data: dict, db_url: str = DB_URL) -> Trade:
         return trade
 
 
-def save_trades(trades: list[dict], db_url: str = DB_URL) -> dict:
+def save_trades(trades: list[dict], db_url: str = DB_URL, schema: str = TRADES_SCHEMA) -> dict:
     """
     Save multiple trades to the database with duplicate handling.
 
@@ -118,6 +119,7 @@ def save_trades(trades: list[dict], db_url: str = DB_URL) -> dict:
     Args:
         trades: List of trade dictionaries
         db_url: Database connection URL
+        schema: Schema name
 
     Returns:
         Dictionary with insertion statistics:
@@ -191,6 +193,7 @@ def get_trades(
     side: Optional[str] = None,
     limit: int = 100,
     db_url: str = DB_URL,
+    schema: str = TRADES_SCHEMA,
 ) -> list[Trade]:
     """
     Retrieve trades from the database with optional filtering.
@@ -200,11 +203,13 @@ def get_trades(
         side: Filter by side ('buy' or 'sell')
         limit: Maximum number of trades to return
         db_url: Database connection URL
+        schema: Schema name
 
     Returns:
         List of Trade objects
     """
     with get_session(db_url) as session:
+        # Build query with schema-aware table
         query = session.query(Trade)
 
         if coin:
@@ -215,12 +220,13 @@ def get_trades(
         return query.order_by(Trade.timestamp.desc()).limit(limit).all()
 
 
-def get_trade_stats(db_url: str = DB_URL) -> dict:
+def get_trade_stats(db_url: str = DB_URL, schema: str = TRADES_SCHEMA) -> dict:
     """
     Get trade statistics from the database.
 
     Args:
         db_url: Database connection URL
+        schema: Schema name
 
     Returns:
         Dictionary with trade statistics
@@ -230,8 +236,8 @@ def get_trade_stats(db_url: str = DB_URL) -> dict:
 
         trades_by_coin = {}
         for coin in session.query(Trade.coin).distinct():
-            count = session.query(Trade).filter(Trade.coin == coin).count()
-            trades_by_coin[coin] = count
+            count = session.query(Trade).filter(Trade.coin == coin[0]).count()
+            trades_by_coin[coin[0]] = count
 
         trades_by_side = {
             "buy": session.query(Trade).filter(Trade.side == "buy").count(),

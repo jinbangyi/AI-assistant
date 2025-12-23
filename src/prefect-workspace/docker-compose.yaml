@@ -1,0 +1,142 @@
+services:
+  # PostgreSQL database for Prefect
+  postgres:
+    image: postgres:15-alpine
+    container_name: prefect-postgres
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefect
+      POSTGRES_DB: prefect
+    volumes:
+      - prefect-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prefect"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - prefect-network
+
+  # Prefect Server (API + UI)
+  prefect-server:
+    image: prefecthq/prefect:2-latest
+    container_name: prefect-server
+    command: /prefect-init.sh
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:prefect@postgres:5432/prefect
+      PREFECT_API_URL: http://localhost:4200/api
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_SERVER_API_PORT: 4200
+    ports:
+      - "4200:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - prefect-data:/root/.prefect
+      - ./prefect-init.sh:/prefect-init.sh:ro
+      - ./flows:/workspace/flows:ro
+    networks:
+      - prefect-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health').read()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Prefect Worker for running flows
+  prefect-worker:
+    image: prefecthq/prefect:2-latest
+    container_name: prefect-worker
+    command: >
+      sh -c "
+      export PREFECT_API_URL='http://prefect-server:4200/api' &&
+      pip install websocket-client psycopg2-binary &&
+      echo 'Waiting for Prefect server to be ready...' &&
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        if python -c \"import urllib.request; urllib.request.urlopen('http://prefect-server:4200/api/health').read()\" 2>/dev/null; then
+          echo 'Server is ready! Waiting for work pool...' &&
+          break
+        fi &&
+        sleep 2
+      done &&
+      sleep 5 &&
+      echo 'Starting Prefect worker with work pool hyperliquid-pool...' &&
+      prefect worker start --pool hyperliquid-pool --type process
+      "
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    volumes:
+      - prefect-data:/root/.prefect
+      - ./flows:/workspace/flows:ro
+    networks:
+      - prefect-network
+
+  # pgAdmin - PostgreSQL Web UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: prefect-pgadmin
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Create storage directory
+        mkdir -p /var/lib/pgadmin/storage/admin@prefect.io
+
+        # Start pgAdmin in background
+        /entrypoint.sh "$$@" &
+
+        # Wait for pgAdmin to be ready
+        echo "Waiting for pgAdmin to start..."
+        for i in $$(seq 1 30); do
+          if curl -s http://localhost:80/misc/ping >/dev/null 2>&1; then
+            echo "pgAdmin is ready!"
+            break
+          fi
+          sleep 1
+        done
+
+        # Wait for database initialization
+        sleep 3
+
+        # Run the setup script
+        echo "Running server setup script..."
+        python3 /tmp/setup-servers.py
+
+        # Keep the container running
+        wait
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@prefect.io
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./pgadmin/setup-servers.py:/tmp/setup-servers.py:ro
+    networks:
+      - prefect-network
+    profiles:
+      - pgadmin  # Use --profile pgadmin to start this service
+
+volumes:
+  prefect-postgres-data:
+    driver: local
+  prefect-data:
+    driver: local
+  pgadmin-data:
+    driver: local
+
+networks:
+  prefect-network:
+    driver: bridge

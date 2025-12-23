@@ -11,6 +11,8 @@ from decimal import Decimal
 
 from sqlalchemy import create_engine, String, BigInteger, DateTime, Numeric, JSON, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
+from sqlalchemy.exc import IntegrityError
+import logging
 
 
 # PostgreSQL connection URL - can be overridden via environment
@@ -20,6 +22,9 @@ DB_URL = os.environ.get("TRADES_DB_URL", DEFAULT_DB_URL)
 
 # Schema name for trades tables (separate from Prefect tables)
 TRADES_SCHEMA = "hyperliquid"
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -38,7 +43,7 @@ class Trade(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(precision=20, scale=8))
     size: Mapped[Decimal] = mapped_column(Numeric(precision=20, scale=8))
     timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
-    trade_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    trade_id: Mapped[int] = mapped_column(BigInteger, index=True, unique=True)
     tx_hash: Mapped[str] = mapped_column(String(255))
     users: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -99,35 +104,82 @@ def save_trade(trade_data: dict, db_url: str = DB_URL) -> Trade:
         return trade
 
 
-def save_trades(trades: list[dict], db_url: str = DB_URL) -> int:
+def save_trades(trades: list[dict], db_url: str = DB_URL) -> dict:
     """
-    Save multiple trades to the database.
+    Save multiple trades to the database with duplicate handling.
+
+    Attempts bulk insert first. If IntegrityError occurs (duplicate trade_id),
+    falls back to individual inserts with per-trade try-except to handle duplicates.
 
     Args:
         trades: List of trade dictionaries
         db_url: Database connection URL
 
     Returns:
-        Number of trades saved
+        Dictionary with insertion statistics:
+        - saved: Number of trades saved
+        - duplicates: Number of duplicate trades skipped
+        - errors: Number of unexpected errors
     """
-    with get_session(db_url) as session:
-        trade_objects = []
-        for t in trades:
-            trade = Trade(
-                coin=t["coin"],
-                side=t["side"],
-                price=Decimal(str(t["price"])),
-                size=Decimal(str(t["size"])),
-                timestamp=datetime.fromisoformat(t["timestamp"]),
-                trade_id=t["trade_id"],
-                tx_hash=t["tx_hash"],
-                users=t["users"],
-            )
-            trade_objects.append(trade)
+    if not trades:
+        return {"saved": 0, "duplicates": 0, "errors": 0}
 
-        session.add_all(trade_objects)
-        session.commit()
-        return len(trade_objects)
+    stats = {"saved": 0, "duplicates": 0, "errors": 0}
+
+    # Try bulk insert first for efficiency
+    try:
+        with get_session(db_url) as session:
+            trade_objects = []
+            for t in trades:
+                trade = Trade(
+                    coin=t["coin"],
+                    side=t["side"],
+                    price=Decimal(str(t["price"])),
+                    size=Decimal(str(t["size"])),
+                    timestamp=datetime.fromisoformat(t["timestamp"]),
+                    trade_id=t["trade_id"],
+                    tx_hash=t["tx_hash"],
+                    users=t["users"],
+                )
+                trade_objects.append(trade)
+
+            session.add_all(trade_objects)
+            session.commit()
+            stats["saved"] = len(trade_objects)
+            return stats
+    except IntegrityError:
+        # Duplicate detected - fall back to individual inserts
+        logger.info(f"Bulk insert failed due to duplicate, attempting individual inserts for {len(trades)} trades")
+
+    # Fallback: individual inserts with per-trade error handling
+    for t in trades:
+        try:
+            with get_session(db_url) as session:
+                trade = Trade(
+                    coin=t["coin"],
+                    side=t["side"],
+                    price=Decimal(str(t["price"])),
+                    size=Decimal(str(t["size"])),
+                    timestamp=datetime.fromisoformat(t["timestamp"]),
+                    trade_id=t["trade_id"],
+                    tx_hash=t["tx_hash"],
+                    users=t["users"],
+                )
+                session.add(trade)
+                session.commit()
+                stats["saved"] += 1
+        except IntegrityError:
+            # Log duplicate with key identifiers
+            logger.debug(
+                f"Duplicate trade skipped: coin={t['coin']}, trade_id={t['trade_id']}, "
+                f"tx_hash={t.get('tx_hash', 'N/A')}, timestamp={t.get('timestamp', 'N/A')}"
+            )
+            stats["duplicates"] += 1
+        except Exception as e:
+            logger.error(f"Error saving trade (coin={t['coin']}, trade_id={t['trade_id']}): {e}")
+            stats["errors"] += 1
+
+    return stats
 
 
 def get_trades(

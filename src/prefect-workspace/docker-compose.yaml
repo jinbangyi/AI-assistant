@@ -19,6 +19,57 @@ services:
     networks:
       - prefect-network
 
+  # pgAdmin - PostgreSQL Web UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: prefect-pgadmin
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Create storage directory
+        mkdir -p /var/lib/pgadmin/storage/admin@prefect.io
+
+        # Start pgAdmin in background
+        /entrypoint.sh "$$@" &
+
+        # Wait for pgAdmin to be ready
+        echo "Waiting for pgAdmin to start..."
+        for i in $$(seq 1 30); do
+          if curl -s http://localhost:80/misc/ping >/dev/null 2>&1; then
+            echo "pgAdmin is ready!"
+            break
+          fi
+          sleep 1
+        done
+
+        # Wait for database initialization
+        sleep 3
+
+        # Run the setup script
+        echo "Running server setup script..."
+        python3 /tmp/setup-servers.py
+
+        # Keep the container running
+        wait
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@prefect.io
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./pgadmin/setup-servers.py:/tmp/setup-servers.py:ro
+    networks:
+      - prefect-network
+    profiles:
+      - pgadmin  # Use --profile pgadmin to start this service
+
   # Prefect Server (API + UI)
   prefect-server:
     image: prefecthq/prefect:2-latest
@@ -46,6 +97,33 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # Continuous Hyperliquid Trade Subscriber
+  hyperliquid-subscriber:
+    image: prefecthq/prefect:2-latest
+    container_name: hyperliquid-subscriber
+    command: >
+      sh -c "
+      pip install websocket-client psycopg2-binary &&
+      cd /workspace/flows &&
+      python continuous_trade_subscriber.py
+      "
+    environment:
+      HYPERLIQUID_COINS: ${HYPERLIQUID_COINS:-ETH,SOL,BTC}
+      BATCH_FLUSH_INTERVAL_SECONDS: ${BATCH_FLUSH_INTERVAL_SECONDS:-10}
+      BATCH_SIZE: ${BATCH_SIZE:-10000}
+      HEALTH_CHECK_PORT: ${HEALTH_CHECK_PORT:-8093}
+      TRADES_DB_URL: postgresql+psycopg2://prefect:prefect@postgres:5432/prefect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./flows:/workspace/flows:ro
+    networks:
+      - prefect-network
+    restart: unless-stopped
+    ports:
+      - "${HEALTH_CHECK_PORT:-8093}:8093"
 
   # Prefect Worker for running flows
   prefect-worker:
@@ -82,6 +160,8 @@ volumes:
   prefect-postgres-data:
     driver: local
   prefect-data:
+    driver: local
+  pgadmin-data:
     driver: local
 
 networks:

@@ -24,16 +24,15 @@ declare -A SERVICES=(
     ["signoz"]="src/signoz-workspace|3301,4317,4318|SigNoz Observability"
     ["superset"]="src/superset-workspace|8091|Apache Superset BI"
     ["prefect"]="src/prefect-workspace|4200|Prefect Workflow Orchestrator"
-    ["temporal"]="src/temporal-workspace|7233,8088|Temporal Workflow Engine"
 )
 
 # Default services for common profiles
 declare -A PROFILES=(
     ["ai"]="dify openwebui litellm"
-    ["workflow"]="n8n prefect temporal"
+    ["workflow"]="n8n prefect"
     ["observability"]="signoz"
     ["bi"]="superset"
-    ["all"]="dify openwebui litellm n8n signoz superset prefect temporal"
+    ["all"]="dify openwebui litellm n8n signoz superset prefect"
 )
 
 # Load environment file if exists
@@ -233,7 +232,6 @@ show_urls() {
     echo "  SigNoz UI:         http://localhost:3301"
     echo "  Superset:          http://localhost:8091"
     echo "  Prefect UI:        http://localhost:4200"
-    echo "  Temporal UI:       http://localhost:8088"
 }
 
 # Expand profile to services

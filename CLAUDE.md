@@ -11,7 +11,6 @@ This is an AI Assistant Development Environment that integrates multiple AI/ML s
 ```
 Open WebUI (8080) -> Dify (8010) -> n8n (5678, 5679) -> SigNoz
                                 -> LiteLLM (4000) -> External LLMs
-                                -> Temporal (7233, 8088)
                                 -> Prefect (4200)
                                 -> Superset (8091)
 ```
@@ -31,8 +30,6 @@ Open WebUI (8080) -> Dify (8010) -> n8n (5678, 5679) -> SigNoz
 | SigNoz OTLP HTTP | 4318 | OpenTelemetry traces |
 | Superset | 8091 | Data visualization |
 | Prefect UI | 4200 | Prefect workflow orchestrator |
-| Temporal UI | 8088 | Temporal workflow UI |
-| Temporal API | 7233 | Temporal gRPC API |
 
 ## Service Management
 
@@ -49,7 +46,7 @@ The `manager.sh` script provides unified service management with port conflict d
 
 # Start by profile
 ./manager.sh start ai           # dify, openwebui, litellm
-./manager.sh start workflow     # n8n, prefect, temporal
+./manager.sh start workflow     # n8n, prefect
 ./manager.sh start observability # signoz
 ./manager.sh start bi           # superset
 ./manager.sh start all          # everything
@@ -113,11 +110,6 @@ AI-assistant/
 │   │   ├── flows/            # Workflow definitions
 │   │   ├── examples/         # Usage examples
 │   │   └── prefect-init.sh
-│   └── temporal-workspace/    # Temporal workflows
-│       ├── docker-compose.yaml
-│       ├── workflows/        # Workflow definitions
-│       ├── workers/          # Activity workers
-│       └── examples/         # Usage examples
 └── pyproject.toml            # Python dependencies
 ```
 
@@ -133,19 +125,6 @@ Prefect uses a process-based work pool `hyperliquid-pool` created automatically 
 # Run a flow
 cd src/prefect-workspace
 python flows/hyperliquid_trades_flow.py
-```
-
-### Temporal Workflows
-Temporal uses long-running worker processes for persistent WebSocket subscriptions.
-
-```bash
-# Start Temporal services
-./manager.sh start temporal
-
-# Run workflow and worker
-cd src/temporal-workspace
-python scripts/start_hyperliquid_subscription.py
-python workers/hyperliquid_trade_worker.py
 ```
 
 ## Environment Configuration
@@ -185,11 +164,6 @@ Environment variables are configured in `.devcontainer/.env`:
 ### Prefect
 - `PREFECT_DB_PORT` - Database port (default: 5435)
 
-### Temporal
-- `TEMPORAL_UI_PORT` - API port (default: 7233)
-- `TEMPORAL_WEB_PORT` - Web UI port (default: 8088)
-- `TEMPORAL_DB_PORT` - Database port (default: 5436)
-
 ## Configuration Files
 
 Located in each workspace's `configs/` directory:
@@ -203,7 +177,6 @@ Located in each workspace's `configs/` directory:
 
 Core dependencies from `pyproject.toml`:
 - `websocket-client` - WebSocket connections for Hyperliquid
-- `temporalio` - Temporal workflow SDK
 - `asyncpg` - Async PostgreSQL driver
 - `websockets` - Async WebSocket support
 
@@ -225,12 +198,10 @@ To prevent conflicts, each service uses unique ports:
 - SigNoz: 3301, 4317, 4318
 - Superset: 8091
 - Prefect: 4200, 5435 (db)
-- Temporal: 7233, 8088, 5436 (db)
 
 ### Multi-Orchestrator Design
-The codebase supports both **Prefect** and **Temporal** for different use cases:
+The codebase supports **Prefect** for different use cases:
 - **Prefect**: ETL-style flows with batch processing (database migration, data aggregation)
-- **Temporal**: Long-running persistent workflows with real-time WebSocket subscriptions
 
 ### Database Isolation
 Each service has its own PostgreSQL instance to allow independent management:
@@ -238,7 +209,6 @@ Each service has its own PostgreSQL instance to allow independent management:
 - `n8n` - n8n workflow state
 - `litellm` - LiteLLM proxy metrics and user management
 - `prefect` - Prefect workflow state
-- `temporal` - Temporal workflow state
 - `biz` / `superset` - Business data and BI
 
 ### Observability Integration

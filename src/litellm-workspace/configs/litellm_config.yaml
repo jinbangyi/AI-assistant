@@ -1,0 +1,47 @@
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis
+    supported_call_types: [] 
+  json_logs: true
+  num_retries: 2
+  request_timeout: 600
+  # success_callback: ["langfuse"]
+  # langfuse_default_tags: ["cache_hit", "cache_key", "user_api_key_alias", "semantic-similarity", "proxy_base_url"]
+  callbacks: ["otel"]
+  # default_fallbacks: ["glm-4.6-openrouter"]
+
+general_settings:
+  health_check_interval: 600
+  background_health_checks: false
+  forward_client_headers_to_llm_api: true
+  store_prompts_in_spend_logs: true
+  store_model_in_db: true
+
+# model_list:
+# - litellm_params:
+#     api_base: https://openrouter.ai/api/v1
+#     model: openrouter/openai/gpt-5-nano
+#     timeout: 300
+#   model_name: gpt-5-nano
+# - litellm_params:
+#     api_base: https://api.deepseek.com/v1
+#     model: deepseek/deepseek-chat
+#     timeout: 300
+#   model_name: deepseek-chat
+
+router_settings:
+  enable_pre_call_checks: true
+  enable_pre_call_check: true
+  # cache_responses: false
+  # routing_strategy: "cost-based-routing"
+
+  disable_cooldowns: true
+  allowed_fails: 2
+  # global timeout
+  timeout: 600
+  cooldown_time: 30
+  retry_policy:
+    TimeoutErrorRetries: 1
+  # fallbacks: [{"glm-4.5": ["glm-4.6-openrouter"]}, {"glm-4.6": ["glm-4.6-openrouter"]}]
+  # model_group_alias: {"glm-4.5": "glm-4.6-full", "glm-4.6": "glm-4.6-full"}

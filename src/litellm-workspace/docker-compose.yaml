@@ -1,0 +1,84 @@
+services:
+  # LiteLLM Database
+  litellm-db:
+    image: postgres:15-alpine
+    container_name: litellm-db
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm_password}
+      - POSTGRES_DB=litellm
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - litellm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # LiteLLM Service
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.80.0-stable.1
+    container_name: litellm
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm_password}@litellm-db:5432/litellm
+      - REDIS_URL=redis://litellm-redis:6379
+      - CONFIG_FILE_PATH=/app/litellm_config.yaml
+      - USE_PRISMA_MIGRATE=true
+      - UI=true
+      - ADMIN_UI=true
+      - LOG_REQUESTS=true
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-change-this-to-a-random-string}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-nftgo-1234-abcd}
+      - LITELLM_LOG=INFO
+      - STORE_MODEL_IN_DB=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-http://signoz-otel-collector:4317}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_HEADERS:-signoz-ingestion-key=litellm}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_TRACES_EXPORTER=${OTEL_TRACES_EXPORTER:-otlp}
+      - OTEL_METRICS_EXPORTER=${OTEL_METRICS_EXPORTER:-otlp}
+      - OTEL_LOGS_EXPORTER=${OTEL_LOGS_EXPORTER:-otlp}
+    volumes:
+      - litellm-data:/app/litellm
+      - ./configs/litellm_config.yaml:/app/litellm_config.yaml:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+      litellm-redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - litellm-network
+    extra_hosts:
+      - "signoz-otel-collector:host-gateway"
+
+  litellm-redis:
+    image: redis:7-alpine
+    container_name: litellm-redis
+    ports:
+      - "${LITELLM_REDIS_PORT:-6380}:6379"
+    volumes:
+      - litellm-redis-data:/data
+    networks:
+      - litellm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  litellm-data:
+    name: litellm-data
+  litellm-db-data:
+    name: litellm-db-data
+  litellm-redis-data:
+    name: litellm-redis-data
+
+networks:
+  litellm-network:
+    driver: bridge

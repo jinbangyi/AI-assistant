@@ -1,0 +1,59 @@
+# Temporal Server Configuration Template
+# This file can be mounted to enable runtime heartbeating and other features
+
+# Note: Runtime heartbeating (worker heartbeating) is enabled by default
+# in Temporal Server 1.24.0+ if the server supports it.
+# The warning you see is typically harmless and doesn't affect functionality.
+
+# If you need to customize the server configuration, you can:
+# 1. Create a custom config file
+# 2. Mount it as a volume in docker-compose
+# 3. Set TEMPORAL_CONFIG_PATH environment variable
+
+# Example minimal config for enabling advanced features:
+# global:
+#   membership:
+#     maxJoinDuration: 30s
+#   pprof:
+#     port: 0
+# 
+# services:
+#   frontend:
+#     rpc:
+#       grpcPort: 7233
+#     membership:
+#       maxJoinDuration: 30s
+# 
+# clusterMetadata:
+#   enableGlobalNamespace: false
+#   failoverVersionIncrement: 10
+#   masterClusterName: "active"
+#   currentClusterName: "active"
+#   clusterInformation:
+#     active:
+#       enabled: true
+#       initialFailoverVersion: 1
+#       rpcName: "frontend"
+#       rpcAddress: "127.0.0.1:7233"
+# 
+# persistence:
+#   defaultStore: default
+#   visibilityStore: visibility
+#   numHistoryShards: 4
+#   datastores:
+#     default:
+#       sql:
+#         pluginName: "postgres12"
+#         databaseName: "temporal"
+#         connectAddr: "temporal-postgres:5432"
+#         connectProtocol: "tcp"
+#         user: "temporal"
+#         password: "temporal"
+#     visibility:
+#       sql:
+#         pluginName: "postgres12"
+#         databaseName: "temporal_visibility"
+#         connectAddr: "temporal-postgres:5432"
+#         connectProtocol: "tcp"
+#         user: "temporal"
+#         password: "temporal"

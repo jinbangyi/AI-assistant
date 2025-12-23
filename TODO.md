@@ -28,3 +28,15 @@
     - update apikey on open webui
 
   - [ ] create dify admin user
+    - create dify admin user
+      username: `example`
+      email: `example@example.com`
+      password: `examplep123assword`
+
+- [ ] multi context integration into open webui
+  - gitlab
+  - lark tasks
+  - loki
+  - grafana
+  - signoz
+  - n8n

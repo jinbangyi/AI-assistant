@@ -14,7 +14,7 @@ open webui -> dify -> n8n -> langfuse
            -> litellm -> deepseek
                       -> openrouter
 
-- localhost:3000 -> dify
+- localhost:8010 -> dify-nginx
 - localhost:8080 -> open webui
 - localhost:4000 -> litellm
 - localhost:5678 -> n8n

@@ -1,0 +1,84 @@
+services:
+  biz-postgres:
+    image: postgres:15-alpine
+    container_name: biz-db
+    environment:
+      - POSTGRES_USER=biz
+      - POSTGRES_PASSWORD=${BIZ_DB_PASSWORD:-biz_password}
+      - POSTGRES_DB=biz
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - biz-db-data:/var/lib/postgresql/data
+      - ./configs/init-superset-db.sh:/docker-entrypoint-initdb.d/init-superset-db.sh
+    ports:
+      - "${BIZ_DB_PORT:-5434}:5432"
+    networks:
+      - biz-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - multi-user
+
+  biz-superset-init:
+    image: apache/superset:6.0.0rc4-dev
+    container_name: biz-superset-init
+    environment:
+      - SUPERSET_LOAD_EXAMPLES=no
+      - ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-admin}
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-supersecretkey}
+      - DATABASE_HOST=biz-db
+      - DATABASE_PORT=5432
+      - DATABASE_DB=superset
+      - DATABASE_USER=biz
+      - DATABASE_PASSWORD=${BIZ_DB_PASSWORD:-biz_password}
+      - SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://biz:${BIZ_DB_PASSWORD:-biz_password}@biz-db:5432/superset
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
+    volumes:
+      - ./configs/superset_config.py:/app/pythonpath/superset_config.py
+    command: /app/docker/docker-init.sh
+    depends_on:
+      biz-postgres:
+        condition: service_healthy
+    networks:
+      - biz-network
+    restart: "no"
+    profiles:
+      - multi-user
+
+  biz-superset:
+    image: apache/superset:6.0.0rc4-dev
+    container_name: biz-superset
+    environment:
+      - SUPERSET_ENV=production
+      - SUPERSET_LOAD_EXAMPLES=no
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-supersecretkey}
+      - DATABASE_HOST=biz-db
+      - DATABASE_PORT=5432
+      - DATABASE_DB=superset
+      - DATABASE_USER=biz
+      - DATABASE_PASSWORD=${BIZ_DB_PASSWORD:-biz_password}
+      - SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://biz:${BIZ_DB_PASSWORD:-biz_password}@biz-db:5432/superset
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
+    volumes:
+      - ./configs/superset_config.py:/app/pythonpath/superset_config.py
+    ports:
+      - "${SUPERSET_HTTP_PORT:-8091}:8088"
+    depends_on:
+      biz-superset-init:
+        condition: service_completed_successfully
+    networks:
+      - biz-network
+    restart: unless-stopped
+    profiles:
+      - multi-user
+
+volumes:
+  biz-db-data:
+    name: biz-db-data
+
+networks:
+  biz-network:
+    driver: bridge

@@ -9,4 +9,7 @@ dependencies = [
     "temporalio>=1.8.0",
     "asyncpg>=0.29.0",
     "websockets>=12.0",
+    "httpx>=0.27.0",
+    "sqlalchemy>=2.0.45",
+    "prefect>=3.6.7",
 ]

@@ -18,7 +18,7 @@
 
 ## Tasks
 
-- [ ] Implement trade subscriber
+- [x] Implement trade subscriber
   - 有任何报错需要输出到日志
   - 程序需要稳定运行，不要因为网络问题崩溃、自动重试
 - [ ] index address trade history for fast query
@@ -26,7 +26,16 @@
   - should check the data freshness before fetching.
   - should add last fetch timestamp to avoid duplicate fetching.
   - should merge the fetched data with existing data to avoid duplicates.
+- [ ] a info fill background task
+  - fill address position
+  - address deposit & withdraw
+  - address spot holding(only > $10)
+  - address open orders
 - [ ] Implement address tagger
+- [ ] decesion making agent
+- [ ] freqtrade integration
+- [ ] analytics dashboard
+- [ ] reflection module
 
 ## Address Label Examples
 

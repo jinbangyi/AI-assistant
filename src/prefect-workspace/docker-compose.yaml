@@ -89,6 +89,7 @@ services:
       - prefect-data:/root/.prefect
       - ./prefect-init.sh:/prefect-init.sh:ro
       - ./flows:/workspace/flows:ro
+      - ./lib:/workspace/lib:ro
     networks:
       - prefect-network
     healthcheck:
@@ -154,6 +155,7 @@ services:
     volumes:
       - prefect-data:/root/.prefect
       - ./flows:/workspace/flows:ro
+      - ./lib:/workspace/lib:ro
     networks:
       - prefect-network
 

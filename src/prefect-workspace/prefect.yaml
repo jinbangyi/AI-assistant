@@ -1,0 +1,21 @@
+### Prefect deployment configuration for Hyperliquid flows
+
+# Basic deployment using local filesystem (flows are volume-mounted)
+
+deployments:
+  - name: backfill-address-history
+    entrypoint: flows/backfill_address_history.py:backfill_address_flow
+    parameters: {}
+    work_pool:
+      name: hyperliquid-pool
+      work_queue_name: default
+    schedule: null
+
+  - name: populate-address-trades
+    entrypoint: flows/backfill_address_history.py:populate_address_trades_flow
+    parameters: {}
+    work_pool:
+      name: hyperliquid-pool
+      work_queue_name: default
+    schedule: null
+

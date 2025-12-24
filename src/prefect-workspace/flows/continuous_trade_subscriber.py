@@ -93,6 +93,8 @@ def process_trade(trade_data: dict) -> dict:
     ts_ms = trade_data["time"]
     dt = datetime.fromtimestamp(ts_ms / 1000)
     formatted = dt.strftime('%Y-%m-%dT%H:%M:%S')
+    if len(trade_data) > 8:
+        logger.warning(f"Extra fields in trade data: {trade_data}")
 
     return {
         "coin": trade_data["coin"],

@@ -1,0 +1,26 @@
+### Get user position
+POST https://api.hyperliquid.xyz/info
+Content-Type: application/json
+
+{
+  "type": "clearinghouseState",
+  "user": "0x398a7bfa21e77a2579cbebc8bacf454af40b3553"
+}
+
+### Get perp dexs
+POST https://api.hyperliquid.xyz/info
+Content-Type: application/json
+
+{
+  "type": "perpDexs"
+}
+
+### Get perp max leverage and lowerBound
+POST https://api.hyperliquid.xyz/info
+Content-Type: application/json
+
+{
+  "type": "meta"
+}
+
+# PGRd1kpRrYUMxByjaj7m0k9aLsxWflAAXmZrKg68i4mskhfaT7b0f6Xh8TSbiqY8pNRzIZ_6WVu8CM4Ps5Bqeg

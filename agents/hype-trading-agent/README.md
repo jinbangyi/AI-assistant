@@ -21,17 +21,50 @@
 - [x] Implement trade subscriber
   - 有任何报错需要输出到日志
   - 程序需要稳定运行，不要因为网络问题崩溃、自动重试
-- [ ] index address trade history for fast query
+- [x] index address trade history for fast query
   - if data is not enough, fetch historical trades from Hyperliquid REST API.
   - should check the data freshness before fetching.
   - should add last fetch timestamp to avoid duplicate fetching.
   - should merge the fetched data with existing data to avoid duplicates.
+- [ ] a address info collector demo for single python script
+   - input: a list of addresses
+   - output: full address info including:
+     - trade history
+     - deposit & withdraw history
+     - spot holding (only > $10)
+     - open orders
+     - Perps Position Value
+     - Account Total Value
+     - Free Margin Available
+     - Positions Table
+     - PnL (Profit & Loss)
 - [ ] a info fill background task
   - fill address position
   - address deposit & withdraw
   - address spot holding(only > $10)
   - address open orders
 - [ ] Implement address tagger
+  - 规则初筛 + LLM 复核高价值地址
+  - XGBoost 地址行为预测模型
+    目标：预测下一个时间窗口（如 1min）内，某地址是否会
+    - 开多 / 开空 / 平仓 / 不动
+    - 交易方向（side）、预期 size
+    输入特征：
+    - 地址标签，tag = "smart_money"
+    - K线数据，最近 5 根 1min K线：open, high, low, close, volume, RSI, MACD
+    - 当前持仓，该地址当前净持仓方向 & size（需从历史 trades 推算）
+    - 微观结构，最近 10 笔该地址的 trades（side, size, relative to mid-price）
+  - 行为预测 → 市场价格预测
+    - 预测每个 trader 行为 → 计算未来价格
+  - 模型验证
+      验证流程：
+      1. 固定时间点 T：用 T 时刻前的数据：给地址打标 + 获取 K线 + 推算持仓
+      2. 预测 [T, T+Δt) 内行为
+      3. 对比真实 trades：若地址在 [T, T+Δt) 有 trade → 检查预测方向/是否交易 是否正确
+      4. 评估指标：
+        - 方向准确率（Direction Accuracy）
+        - 行为召回率（Recall of active traders）
+        - size 预测 MAE
 - [ ] decesion making agent
 - [ ] freqtrade integration
 - [ ] analytics dashboard

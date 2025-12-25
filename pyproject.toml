@@ -12,4 +12,7 @@ dependencies = [
     "httpx>=0.27.0",
     "sqlalchemy>=2.0.45",
     "prefect>=3.6.7",
+    "hyperliquid-python-sdk>=0.21.0",
+    "loguru>=0.7.3",
+    "psycopg2-binary>=2.9.11",
 ]

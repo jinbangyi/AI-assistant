@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verification Analytics Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@3.3.1/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            border: 1px solid #334155;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-top: 16px;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .control-group label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        select, button {
+            padding: 10px 16px;
+            border-radius: 8px;
+            border: 1px solid #475569;
+            background: #1e293b;
+            color: #f1f5f9;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        select:hover, button:hover {
+            border-color: #64748b;
+            background: #334155;
+        }
+
+        button.primary {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-color: #3b82f6;
+            font-weight: 500;
+        }
+
+        button.primary:hover {
+            background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-top: 18px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .metrics-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+
+        .metric-card h3 {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .metric-card .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #f1f5f9;
+        }
+
+        .metric-card .subtext {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+
+        .metric-card.good .value {
+            color: #22c55e;
+        }
+
+        .metric-card.warning .value {
+            color: #eab308;
+        }
+
+        .metric-card.bad .value {
+            color: #ef4444;
+        }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .chart-container {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+
+        .chart-container h3 {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 16px;
+            color: #f1f5f9;
+        }
+
+        .table-container {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px;
+            background: #0f172a;
+            color: #94a3b8;
+            font-weight: 500;
+            border-bottom: 1px solid #334155;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        tr:hover td {
+            background: #0f172a;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #475569;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .status-badge.success {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+
+        .status-badge.pending {
+            background: rgba(234, 179, 8, 0.2);
+            color: #eab308;
+        }
+
+        .status-badge.error {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .last-updated {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Verification Analytics Dashboard</h1>
+            <div class="controls">
+                <div class="control-group">
+                    <label>Coin</label>
+                    <select id="coinSelect">
+                        <option value="" disabled selected>Loading...</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Horizon</label>
+                    <select id="horizonSelect">
+                        <option value="" disabled selected>Loading...</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Time Range</label>
+                    <select id="rangeSelect">
+                        <option value="1h">Last 1 hour</option>
+                        <option value="6h">Last 6 hours</option>
+                        <option value="24h" selected>Last 24 hours</option>
+                        <option value="48h">Last 48 hours</option>
+                        <option value="all">All data</option>
+                    </select>
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="showBands" checked>
+                    <label for="showBands">Show prediction bands</label>
+                </div>
+
+                <button class="primary" onclick="refreshData()">
+                    <span id="refreshText">Refresh</span>
+                </button>
+
+                <button onclick="recompute()">
+                    <span id="recomputeText">Recompute</span>
+                </button>
+
+                <button onclick="exportData()">Export CSV</button>
+            </div>
+            <div class="last-updated">Last updated: <span id="lastUpdated">Never</span></div>
+        </header>
+
+        <div class="metrics-summary" id="metricsSummary">
+            <!-- Metrics will be populated here -->
+        </div>
+
+        <div class="chart-grid">
+            <div class="chart-container">
+                <h3>Price with Prediction Bands</h3>
+                <canvas id="klineChart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h3>Price Prediction (Actual vs Predicted)</h3>
+                <canvas id="pricePredictionChart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h3>Pinball Loss by Quantile</h3>
+                <canvas id="pinballChart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h3>Direction Accuracy & Coverage</h3>
+                <canvas id="accuracyChart"></canvas>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <h3>Recent Samples</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Price</th>
+                        <th>Actual Return</th>
+                        <th>P10</th>
+                        <th>P50 (Median)</th>
+                        <th>P90</th>
+                        <th>In Range</th>
+                    </tr>
+                </thead>
+                <tbody id="samplesTable">
+                    <!-- Samples will be populated here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let klineChart = null;
+        let pricePredictionChart = null;
+        let pinballChart = null;
+        let accuracyChart = null;
+        let appConfig = { coins: [], horizons: [] };
+
+        // Chart colors
+        const colors = {
+            price: '#3b82f6',
+            p10: 'rgba(34, 197, 94, 0.3)',
+            p50: 'rgba(234, 179, 8, 0.6)',
+            p90: 'rgba(239, 68, 68, 0.3)',
+            actual: '#22c55e',
+            predicted: '#eab308',
+            grid: '#334155',
+            text: '#94a3b8',
+        };
+
+        function getCoin() {
+            return document.getElementById('coinSelect').value;
+        }
+
+        function getHorizon() {
+            return document.getElementById('horizonSelect').value;
+        }
+
+        function getRange() {
+            return document.getElementById('rangeSelect').value;
+        }
+
+        function showBands() {
+            return document.getElementById('showBands').checked;
+        }
+
+        function formatTimestamp(ts) {
+            return new Date(ts * 1000).toLocaleString();
+        }
+
+        async function fetchAPI(endpoint, params = {}) {
+            const url = new URL(endpoint, API_BASE);
+            Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `API error: ${response.statusText}`);
+            }
+            return response.json();
+        }
+
+        // Load CONFIG from main.py
+        async function loadConfig() {
+            try {
+                const config = await fetchAPI('/api/config');
+                appConfig = config;
+
+                // Populate coin selector
+                const coinSelect = document.getElementById('coinSelect');
+                coinSelect.innerHTML = config.coins.map(coin =>
+                    `<option value="${coin}">${coin}</option>`
+                ).join('');
+                if (config.coins.length > 0) {
+                    coinSelect.value = config.coins[0];
+                }
+
+                // Populate horizon selector
+                const horizonSelect = document.getElementById('horizonSelect');
+                horizonSelect.innerHTML = config.horizons.map(h =>
+                    `<option value="${h.value}">${h.label}</option>`
+                ).join('');
+                if (config.horizons.length > 0) {
+                    horizonSelect.value = config.horizons[0].value;
+                }
+
+                // Load initial data after config is loaded
+                await refreshData();
+            } catch (error) {
+                console.error('Error loading config:', error);
+                // Use fallback defaults
+                const coinSelect = document.getElementById('coinSelect');
+                coinSelect.innerHTML = '<option value="BTC">BTC</option><option value="ETH">ETH</option><option value="SOL">SOL</option>';
+
+                const horizonSelect = document.getElementById('horizonSelect');
+                horizonSelect.innerHTML = `
+                    <option value="60">1m</option>
+                    <option value="300">5m</option>
+                    <option value="900">15m</option>
+                    <option value="1800">30m</option>
+                    <option value="3600">1h</option>
+                `;
+
+                await refreshData();
+            }
+        }
+
+        async function refreshData() {
+            const refreshBtn = document.getElementById('refreshText');
+            refreshBtn.innerHTML = 'Loading... <span class="loading"></span>';
+
+            try {
+                await Promise.all([
+                    loadMetrics(),
+                    loadKline(),
+                ]);
+                document.getElementById('lastUpdated').textContent = new Date().toLocaleString();
+            } catch (error) {
+                console.error('Error loading data:', error);
+                const errorMsg = error.message || 'Unknown error';
+                // Check if it's a 404 error about missing data
+                if (errorMsg.includes('No verification data found')) {
+                    alert('No verification data available. Please run: uv run python main.py --verify-only');
+                } else {
+                    alert('Failed to load data: ' + errorMsg);
+                }
+
+                // Show empty state
+                document.getElementById('metricsSummary').innerHTML = `
+                    <div class="metric-card" style="grid-column: 1 / -1; text-align: center; padding: 40px;">
+                        <h3 style="font-size: 16px; color: #94a3b8;">No Verification Data Available</h3>
+                        <p style="color: #64748b; margin: 16px 0;">
+                            Please run the verification pipeline first:
+                        </p>
+                        <code style="background: #0f172a; padding: 8px 16px; border-radius: 4px; display: inline-block;">
+                            uv run python main.py --verify-only
+                        </code>
+                    </div>
+                `;
+            } finally {
+                refreshBtn.textContent = 'Refresh';
+            }
+        }
+
+        async function loadMetrics() {
+            const coin = getCoin();
+            const data = await fetchAPI('/api/metrics', { coin });
+
+            // Update metrics summary
+            const summaryDiv = document.getElementById('metricsSummary');
+            const horizonMetrics = data.horizons.find(h => h.horizon_sec == getHorizon()) || data.horizons[0];
+
+            summaryDiv.innerHTML = `
+                <div class="metric-card ${horizonMetrics.direction_accuracy > 0.5 ? 'good' : 'bad'}">
+                    <h3>Direction Accuracy</h3>
+                    <div class="value">${(horizonMetrics.direction_accuracy * 100).toFixed(1)}%</div>
+                    <div class="subtext">Target: >50%</div>
+                </div>
+                <div class="metric-card ${Math.abs(horizonMetrics.coverage_p10_p90 - 0.8) < 0.1 ? 'good' : 'warning'}">
+                    <h3>Coverage [P10, P90]</h3>
+                    <div class="value">${(horizonMetrics.coverage_p10_p90 * 100).toFixed(1)}%</div>
+                    <div class="subtext">Target: 80%</div>
+                </div>
+                <div class="metric-card">
+                    <h3>Pinball Loss (P50)</h3>
+                    <div class="value">${horizonMetrics.pinball_p50.toFixed(4)}</div>
+                    <div class="subtext">Lower is better</div>
+                </div>
+                <div class="metric-card">
+                    <h3>Samples</h3>
+                    <div class="value">${horizonMetrics.sample_count.toLocaleString()}</div>
+                    <div class="subtext">Horizon: ${horizonMetrics.horizon_label}</div>
+                </div>
+            `;
+
+            // Update recent samples table
+            const tableBody = document.getElementById('samplesTable');
+            tableBody.innerHTML = data.recent_samples.slice(-20).reverse().map(s => {
+                const hKey = `return_${getHorizon()}s`;
+                const preds = s.predictions?.[hKey] || {};
+                const actual = s.targets?.[hKey] || 0;
+                const inRange = actual >= (preds.p10 || -Infinity) && actual <= (preds.p90 || Infinity);
+
+                return `
+                    <tr>
+                        <td>${formatTimestamp(s.timestamp)}</td>
+                        <td>${(s.close || 0).toFixed(2)}</td>
+                        <td>${(actual * 100).toFixed(3)}%</td>
+                        <td>${(preds.p10 * 100 || 0).toFixed(3)}%</td>
+                        <td>${(preds.p50 * 100 || 0).toFixed(3)}%</td>
+                        <td>${(preds.p90 * 100 || 0).toFixed(3)}%</td>
+                        <td>
+                            <span class="status-badge ${inRange ? 'success' : 'error'}">
+                                ${inRange ? 'Yes' : 'No'}
+                            </span>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            // Update pinball chart
+            updatePinballChart(data.horizons);
+            updateAccuracyChart(data.horizons);
+        }
+
+        async function loadKline() {
+            const coin = getCoin();
+            const horizon = getHorizon();
+            const range = getRange();
+
+            const data = await fetchAPI('/api/kline', { coin, horizon, time_range: range });
+
+            updateKlineChart(data);
+            updatePricePredictionChart(coin, horizon, range);
+        }
+
+        function updateKlineChart(data) {
+            const ctx = document.getElementById('klineChart').getContext('2d');
+
+            // Handle empty data
+            if (!data || data.length === 0) {
+                console.warn('updateKlineChart: No data available');
+                return;
+            }
+
+            const labels = data.map(d => d.timestamp * 1000);
+            const prices = data.map(d => d.close);
+            const p10 = data.map(d => d.close * (1 + d.p10));
+            const p50 = data.map(d => d.close * (1 + d.p50));
+            const p90 = data.map(d => d.close * (1 + d.p90));
+
+            // Build datasets array
+            const datasets = [{
+                label: 'Price',
+                data: labels.map((ts, i) => ({ x: ts, y: prices[i] })),
+                borderColor: colors.price,
+                backgroundColor: colors.price,
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1,
+                order: 1,
+            }];
+
+            if (showBands()) {
+                datasets.push({
+                    label: 'P10',
+                    data: labels.map((ts, i) => ({ x: ts, y: p10[i] })),
+                    borderColor: 'transparent',
+                    backgroundColor: colors.p10,
+                    borderWidth: 0,
+                    pointRadius: 0,
+                    fill: '+1',
+                    order: 2,
+                });
+                datasets.push({
+                    label: 'P90',
+                    data: labels.map((ts, i) => ({ x: ts, y: p90[i] })),
+                    borderColor: 'transparent',
+                    backgroundColor: colors.p90,
+                    borderWidth: 0,
+                    pointRadius: 0,
+                    fill: false,
+                    order: 2,
+                });
+                datasets.push({
+                    label: 'P50 (Median)',
+                    data: labels.map((ts, i) => ({ x: ts, y: p50[i] })),
+                    borderColor: colors.p50,
+                    backgroundColor: 'transparent',
+                    borderWidth: 1,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    fill: false,
+                    order: 3,
+                });
+            }
+
+            // Destroy existing chart completely
+            if (klineChart) {
+                klineChart.destroy();
+                klineChart = null;
+            }
+
+            klineChart = new Chart(ctx, {
+                type: 'line',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: {
+                        legend: {
+                            labels: { color: colors.text },
+                            // Ensure legend updates when datasets change
+                            display: true,
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`,
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            grid: { color: colors.grid },
+                            ticks: { color: colors.text },
+                        },
+                        y: {
+                            grid: { color: colors.grid },
+                            ticks: { color: colors.text, callback: (v) => '$' + v.toFixed(0) },
+                        },
+                    },
+                },
+            });
+        }
+
+        async function updatePricePredictionChart(coin, horizon, range) {
+            const ctx = document.getElementById('pricePredictionChart').getContext('2d');
+
+            try {
+                // Fetch both data sources in parallel
+                const [chainData, verifyData] = await Promise.all([
+                    fetchAPI('/api/chain-data', { coin, horizon, time_range: range }),
+                    fetchAPI('/api/kline', { coin, horizon, time_range: range })
+                ]);
+
+                // Handle empty data
+                if (!chainData || chainData.length === 0) {
+                    console.warn('updatePricePredictionChart: No chain data available');
+                    return;
+                }
+                if (!verifyData || verifyData.length === 0) {
+                    console.warn('updatePricePredictionChart: No verify data available');
+                    return;
+                }
+
+                // Process chain data (actual prices from verify candles) - full data
+                const chainPoints = chainData.map(d => ({
+                    x: d.timestamp * 1000,
+                    y: d.close
+                }));
+
+                // Process verify data (predicted prices) - only where predictions exist
+                const verifyLabels = verifyData.map(d => d.timestamp * 1000);
+                const verifyPrices = verifyData.map(d => d.close);
+                const p10 = verifyData.map(d => d.close * (1 + d.p10));
+                const p50 = verifyData.map(d => d.close * (1 + d.p50));
+                const p90 = verifyData.map(d => d.close * (1 + d.p90));
+
+                // Build datasets array
+                const datasets = [{
+                    label: 'Actual Price (Chain)',
+                    data: chainPoints,
+                    borderColor: colors.price,
+                    backgroundColor: colors.price,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.1,
+                    order: 1,
+                }];
+
+                // Add prediction bands from verify data
+                datasets.push({
+                    label: 'P10',
+                    data: verifyLabels.map((ts, i) => ({ x: ts, y: p10[i] })),
+                    borderColor: 'transparent',
+                    backgroundColor: colors.p10,
+                    borderWidth: 0,
+                    pointRadius: 0,
+                    fill: '+1',
+                    order: 2,
+                });
+                datasets.push({
+                    label: 'P90',
+                    data: verifyLabels.map((ts, i) => ({ x: ts, y: p90[i] })),
+                    borderColor: 'transparent',
+                    backgroundColor: colors.p90,
+                    borderWidth: 0,
+                    pointRadius: 0,
+                    fill: false,
+                    order: 2,
+                });
+                datasets.push({
+                    label: 'P50 (Median)',
+                    data: verifyLabels.map((ts, i) => ({ x: ts, y: p50[i] })),
+                    borderColor: colors.p50,
+                    backgroundColor: 'transparent',
+                    borderWidth: 1,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    fill: false,
+                    order: 3,
+                });
+
+                // Destroy existing chart completely
+                if (pricePredictionChart) {
+                    pricePredictionChart.destroy();
+                    pricePredictionChart = null;
+                }
+
+                pricePredictionChart = new Chart(ctx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        plugins: {
+                            legend: {
+                                labels: { color: colors.text },
+                                display: true,
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`,
+                                },
+                            },
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                grid: { color: colors.grid },
+                                ticks: { color: colors.text },
+                            },
+                            y: {
+                                grid: { color: colors.grid },
+                                ticks: { color: colors.text, callback: (v) => '$' + v.toFixed(0) },
+                            },
+                        },
+                    },
+                });
+            } catch (error) {
+                console.error('Error loading price prediction chart data:', error);
+                // Show error in chart area
+                const canvas = document.getElementById('pricePredictionChart');
+                const parent = canvas.parentElement;
+                if (!parent.querySelector('.error-message')) {
+                    const errorMsg = document.createElement('div');
+                    errorMsg.className = 'error-message';
+                    errorMsg.style.cssText = 'color: #ef4444; text-align: center; padding: 40px;';
+                    errorMsg.textContent = 'Unable to load chart data: ' + error.message;
+                    parent.insertBefore(errorMsg, canvas);
+                }
+            }
+        }
+
+        function updatePinballChart(horizons) {
+            const ctx = document.getElementById('pinballChart').getContext('2d');
+
+            // Handle empty data
+            if (!horizons || horizons.length === 0) {
+                console.warn('updatePinballChart: No horizons data available');
+                return;
+            }
+
+            const labels = horizons.map(h => h.horizon_label);
+            const p10Data = horizons.map(h => h.pinball_p10);
+            const p50Data = horizons.map(h => h.pinball_p50);
+            const p90Data = horizons.map(h => h.pinball_p90);
+
+            // Destroy existing chart
+            if (pinballChart) {
+                pinballChart.destroy();
+                pinballChart = null;
+            }
+
+            pinballChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'P10', data: p10Data, backgroundColor: 'rgba(34, 197, 94, 0.7)' },
+                        { label: 'P50', data: p50Data, backgroundColor: 'rgba(234, 179, 8, 0.7)' },
+                        { label: 'P90', data: p90Data, backgroundColor: 'rgba(239, 68, 68, 0.7)' },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            labels: { color: colors.text },
+                            display: true,
+                        },
+                    },
+                    scales: {
+                        x: { grid: { color: colors.grid }, ticks: { color: colors.text } },
+                        y: { grid: { color: colors.grid }, ticks: { color: colors.text } },
+                    },
+                },
+            });
+        }
+
+        function updateAccuracyChart(horizons) {
+            const ctx = document.getElementById('accuracyChart').getContext('2d');
+
+            // Handle empty data
+            if (!horizons || horizons.length === 0) {
+                console.warn('updateAccuracyChart: No horizons data available');
+                return;
+            }
+
+            const labels = horizons.map(h => h.horizon_label);
+            const accuracyData = horizons.map(h => h.direction_accuracy * 100);
+            const coverageData = horizons.map(h => h.coverage_p10_p90 * 100);
+
+            // Destroy existing chart
+            if (accuracyChart) {
+                accuracyChart.destroy();
+                accuracyChart = null;
+            }
+
+            accuracyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Direction Accuracy (%)',
+                            data: accuracyData,
+                            backgroundColor: 'rgba(59, 130, 246, 0.7)',
+                        },
+                        {
+                            label: 'Coverage (%)',
+                            data: coverageData,
+                            backgroundColor: 'rgba(34, 197, 94, 0.7)',
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            labels: { color: colors.text },
+                            display: true,
+                        },
+                    },
+                    scales: {
+                        x: { grid: { color: colors.grid }, ticks: { color: colors.text } },
+                        y: {
+                            min: 0,
+                            max: 100,
+                            grid: { color: colors.grid },
+                            ticks: { color: colors.text, callback: (v) => v + '%' },
+                        },
+                    },
+                },
+            });
+        }
+
+        async function recompute() {
+            const recomputeBtn = document.getElementById('recomputeText');
+            recomputeBtn.innerHTML = 'Computing... <span class="loading"></span>';
+
+            try {
+                const response = await fetch('/api/recompute', { method: 'POST' });
+                if (!response.ok) throw new Error('Recompute failed');
+                await response.json();
+                alert('Recompute completed successfully!');
+                await refreshData();
+            } catch (error) {
+                console.error('Recompute error:', error);
+                alert('Recompute failed: ' + error.message);
+            } finally {
+                recomputeBtn.textContent = 'Recompute';
+            }
+        }
+
+        async function exportData() {
+            const coin = getCoin();
+            const range = getRange();
+
+            try {
+                const url = new URL('/api/export', API_BASE);
+                url.searchParams.append('coin', coin);
+                url.searchParams.append('format', 'csv');
+                url.searchParams.append('time_range', range);
+
+                window.open(url.toString(), '_blank');
+            } catch (error) {
+                console.error('Export error:', error);
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        // Event listeners
+        document.getElementById('coinSelect').addEventListener('change', refreshData);
+        document.getElementById('horizonSelect').addEventListener('change', refreshData);
+        document.getElementById('rangeSelect').addEventListener('change', loadKline);
+        document.getElementById('showBands').addEventListener('change', loadKline);
+
+        // Initial load - load config first, then data
+        loadConfig();
+    </script>
+</body>
+</html>

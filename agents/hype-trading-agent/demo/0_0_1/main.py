@@ -13,22 +13,22 @@ Plan Reference: plan.md
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from itertools import groupby
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from loguru import logger
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+import joblib
 
 MINUTE = 60
 MINUTE_MS = 60000
@@ -47,6 +47,7 @@ CONFIG = {
     "trades_dir": Path("./temp-data/trades"),
     "candles_dir": Path("./temp-data/candles"),
     "verify_candles_dir": Path("./temp-data/verify-candles"),
+    "model_path": Path("./best_model.pt"),
 
     # Coins to process
     "coins": [
@@ -61,9 +62,11 @@ CONFIG = {
 
     # Prediction horizons (in seconds)
     "horizons": [
+        MINUTE,
         5 * MINUTE,    # 5 minutes
+        10 * MINUTE,   # 10 minutes
         15 * MINUTE,    # 15 minutes
-        30 * MINUTE,   # 30 minutes
+        # 30 * MINUTE,   # 30 minutes
         # HOUR,   # 1 hour
         # 4 * HOUR,  # 4 hours
         # 12 * HOUR,  # 12 hours
@@ -95,8 +98,19 @@ CONFIG = {
     "hidden_dims": [128, 64],
     "dropout": 0.1,
 
-    # Device
-    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    # Device - MPS for Apple Silicon, CUDA for NVIDIA, CPU fallback
+    "device": "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
+
+    # DataLoader optimizations for MPS
+    "num_workers": 4,  # Number of worker processes for data loading
+    "pin_memory": True,  # Pin memory for faster GPU transfer
+    "persistent_workers": True,  # Keep workers alive between epochs
+    "enable_amp": True,  # Enable automatic mixed precision for MPS/CUDA
+    "enable_compile": False,  # Set True to use torch.compile (PyTorch 2.0+)
+
+    # Sample building optimizations
+    "profile_sample_building": False,  # Enable profiling to identify hotspots
+    "enable_parallel_sample_building": False,  # Enable per-coin parallelism (experimental)
 }
 
 
@@ -200,58 +214,77 @@ class AddressFeatureExtractor:
         if not trades:
             return self._zero_features()
 
-        # Calculate basic metrics
         trade_count = len(trades)
-        buy_trades = [t for t in trades if t.side == "buy"]
-        sell_trades = [t for t in trades if t.side == "sell"]
+
+        # Single pass to collect all data
+        buy_volume = 0.0
+        sell_volume = 0.0
+        sizes = []
+        prices = []
+        first_side = 1 if trades[0].side == "buy" else -1
+        last_side = 1 if trades[-1].side == "buy" else -1
+        side_switches = 0
+        prev_side = trades[0].side
+
+        for t in trades:
+            sizes.append(t.size)
+            prices.append(t.price)
+
+            if t.side == "buy":
+                buy_volume += t.size * t.price
+            else:
+                sell_volume += t.size * t.price
+
+            if t.side != prev_side:
+                side_switches += 1
+                prev_side = t.side
 
         # Volume metrics
-        buy_volume = sum(t.size * t.price for t in buy_trades)
-        sell_volume = sum(t.size * t.price for t in sell_trades)
         gross_volume = buy_volume + sell_volume
         net_volume = buy_volume - sell_volume
 
-        # Size metrics
-        sizes = [t.size for t in trades]
-        avg_size = np.mean(sizes)
-        max_size = np.max(sizes)
-        std_size = np.std(sizes) if len(sizes) > 1 else 0
+        # Size metrics - use numpy for efficiency
+        sizes_arr = np.array(sizes, dtype=np.float32)
+        avg_size = float(sizes_arr.mean())
+        max_size = float(sizes_arr.max())
+        std_size = float(sizes_arr.std()) if len(sizes) > 1 else 0.0
 
         # Directionality
-        net_vol_ratio = net_volume / gross_volume if gross_volume > 0 else 0
-        buy_count = len(buy_trades)
-        sell_count = len(sell_trades)
-        buy_ratio = buy_count / trade_count if trade_count > 0 else 0
+        net_vol_ratio = net_volume / gross_volume if gross_volume > 0 else 0.0
+        buy_count = sum(1 for t in trades if t.side == "buy")
+        buy_ratio = buy_count / trade_count if trade_count > 0 else 0.0
 
-        # Position changes (simplified - using trade direction)
-        # In a real system, you'd track actual positions
-        delta_position = net_volume / current_price if current_price > 0 else 0
+        # Position changes
+        delta_position = net_volume / current_price if current_price > 0 else 0.0
 
-        # Behavior patterns
-        first_side = 1 if trades[0].side == "buy" else -1
-        last_side = 1 if trades[-1].side == "buy" else -1
-        side_switches = sum(1 for i in range(1, len(trades)) if trades[i].side != trades[i-1].side)
-
-        # Price interaction
-        prices = [t.price for t in trades]
-        vwap = sum(p * s for p, s in zip(prices, sizes)) / sum(sizes) if sum(sizes) > 0 else current_price
-        above_vwap_count = sum(1 for t in trades if t.price > vwap)
-        above_vwap_ratio = above_vwap_count / trade_count if trade_count > 0 else 0
-
-        # Price momentum within window
-        if len(prices) >= 2:
-            price_change = (prices[-1] - prices[0]) / prices[0]
-            price_volatility = np.std([p / prices[0] for p in prices])
+        # Price interaction - compute vwap in single pass
+        prices_arr = np.array(prices, dtype=np.float32)
+        total_size = float(sizes_arr.sum())
+        if total_size > 0:
+            vwap = float(np.sum(prices_arr * sizes_arr) / total_size)
         else:
-            price_change = 0
-            price_volatility = 0
+            vwap = current_price
+
+        above_vwap_count = np.sum(prices_arr > vwap)
+        above_vwap_ratio = above_vwap_count / trade_count if trade_count > 0 else 0.0
+
+        # Price momentum
+        if len(prices) >= 2:
+            price_change = float((prices_arr[-1] - prices_arr[0]) / prices_arr[0])
+            price_volatility = float(np.std(prices_arr / prices_arr[0]))
+        else:
+            price_change = 0.0
+            price_volatility = 0.0
 
         # Time distribution
         if len(trades) >= 2:
             time_span = trades[-1].timestamp - trades[0].timestamp
-            trade_frequency = trade_count / time_span if time_span > 0 else 0
+            trade_frequency = trade_count / time_span if time_span > 0 else 0.0
         else:
-            trade_frequency = 0
+            trade_frequency = 0.0
+
+        # Whale indicator: 1 if max_size is significantly larger than average (2x threshold)
+        is_whale = 1 if (avg_size > 0 and max_size > 2 * avg_size) else 0
 
         return {
             # Activity (6 features)
@@ -276,15 +309,15 @@ class AddressFeatureExtractor:
             "first_side": first_side,
             "last_side": last_side,
             "side_switches": side_switches,
-            "side_switch_ratio": side_switches / trade_count if trade_count > 1 else 0,
+            "side_switch_ratio": side_switches / trade_count if trade_count > 1 else 0.0,
 
             # Price interaction (3 features)
             "above_vwap_ratio": above_vwap_ratio,
             "price_change": price_change,
             "price_volatility": price_volatility,
 
-            # Whale indicator (1 feature - will be computed statistically)
-            "is_whale": 1 if max_size > 0 else 0,  # Simplified - actual whale status computed across all addresses
+            # Whale indicator (1 feature)
+            "is_whale": is_whale,
         }
 
     def _zero_features(self) -> dict[str, float]:
@@ -303,6 +336,8 @@ class MarketFeatureExtractor:
 
     def __init__(self, intervals: Optional[list[str]] = None):
         self.intervals = intervals or ["1m", "5m", "15m", "1h"]
+        self._cached_df: Optional[pd.DataFrame] = None
+        self._cached_candles: Optional[list[Candle]] = None
 
     def extract(self, candles_1m: list[Candle], timestamp_ms: int) -> dict[str, float]:
         """
@@ -316,10 +351,13 @@ class MarketFeatureExtractor:
         if not candles_1m:
             return self._zero_features()
 
-        # Convert to DataFrame for easier processing
-        df = self._candles_to_df(candles_1m)
+        # Cache DataFrame if candles haven't changed
+        if self._cached_candles is not candles_1m:
+            self._cached_df = self._candles_to_df(candles_1m)
+            self._cached_candles = candles_1m
 
-        if df.empty or len(df) < 14:  # Need at least 14 periods for RSI
+        df = self._cached_df
+        if df is None or df.empty or len(df) < 14:
             return self._zero_features()
 
         # Current candle
@@ -329,90 +367,101 @@ class MarketFeatureExtractor:
         features = {}
 
         # Current price features (5 features)
-        features["current_price"] = current["close"]
+        current_close = current["close"]
+        features["current_price"] = current_close
         features["open"] = current["open"]
         features["high"] = current["high"]
         features["low"] = current["low"]
         features["volume"] = current["volume"]
 
-        # Returns (4 features)
+        # Returns (4 features) - use vectorized operations
+        close_series = df["close"]
         if current_idx >= 1:
-            features["return_1m"] = (current["close"] - df.iloc[current_idx - 1]["close"]) / df.iloc[current_idx - 1]["close"]
+            features["return_1m"] = (current_close - close_series.iloc[current_idx - 1]) / close_series.iloc[current_idx - 1]
         else:
-            features["return_1m"] = 0
+            features["return_1m"] = 0.0
 
         if current_idx >= 5:
-            features["return_5m"] = (current["close"] - df.iloc[current_idx - 5]["close"]) / df.iloc[current_idx - 5]["close"]
+            features["return_5m"] = (current_close - close_series.iloc[current_idx - 5]) / close_series.iloc[current_idx - 5]
         else:
-            features["return_5m"] = 0
+            features["return_5m"] = 0.0
 
         if current_idx >= 15:
-            features["return_15m"] = (current["close"] - df.iloc[current_idx - 15]["close"]) / df.iloc[current_idx - 15]["close"]
+            features["return_15m"] = (current_close - close_series.iloc[current_idx - 15]) / close_series.iloc[current_idx - 15]
         else:
-            features["return_15m"] = 0
+            features["return_15m"] = 0.0
 
         if current_idx >= 60:
-            features["return_1h"] = (current["close"] - df.iloc[current_idx - 60]["close"]) / df.iloc[current_idx - 60]["close"]
+            features["return_1h"] = (current_close - close_series.iloc[current_idx - 60]) / close_series.iloc[current_idx - 60]
         else:
-            features["return_1h"] = 0
+            features["return_1h"] = 0.0
 
-        # Moving averages (3 features)
+        # Moving averages (3 features) - reuse slices
         if current_idx >= 20:
-            features["ma_20"] = df.iloc[current_idx - 20:current_idx + 1]["close"].mean()
-            features["price_vs_ma20"] = (current["close"] - features["ma_20"]) / features["ma_20"]
+            close_window_20 = close_series.iloc[current_idx - 20:current_idx + 1]
+            ma_20 = float(close_window_20.mean())
+            features["ma_20"] = ma_20
+            features["price_vs_ma20"] = (current_close - ma_20) / ma_20
         else:
-            features["ma_20"] = current["close"]
-            features["price_vs_ma20"] = 0
+            features["ma_20"] = current_close
+            features["price_vs_ma20"] = 0.0
 
         if current_idx >= 50:
-            features["ma_50"] = df.iloc[current_idx - 50:current_idx + 1]["close"].mean()
-            features["price_vs_ma50"] = (current["close"] - features["ma_50"]) / features["ma_50"]
+            close_window_50 = close_series.iloc[current_idx - 50:current_idx + 1]
+            ma_50 = float(close_window_50.mean())
+            features["ma_50"] = ma_50
+            features["price_vs_ma50"] = (current_close - ma_50) / ma_50
         else:
-            features["ma_50"] = current["close"]
-            features["price_vs_ma50"] = 0
+            features["ma_50"] = current_close
+            features["price_vs_ma50"] = 0.0
 
-        # Volatility (2 features)
+        # Volatility (2 features) - reuse computed windows
         if current_idx >= 20:
-            returns = df.iloc[current_idx - 20:current_idx + 1]["close"].pct_change().dropna()
-            features["volatility_20"] = returns.std() if len(returns) > 0 else 0
+            returns = close_series.iloc[current_idx - 20:current_idx + 1].pct_change().dropna()
+            features["volatility_20"] = float(returns.std()) if len(returns) > 0 else 0.0
         else:
-            features["volatility_20"] = 0
+            features["volatility_20"] = 0.0
 
         if current_idx >= 60:
-            returns = df.iloc[current_idx - 60:current_idx + 1]["close"].pct_change().dropna()
-            features["volatility_60"] = returns.std() if len(returns) > 0 else 0
+            returns = close_series.iloc[current_idx - 60:current_idx + 1].pct_change().dropna()
+            features["volatility_60"] = float(returns.std()) if len(returns) > 0 else 0.0
         else:
-            features["volatility_60"] = 0
+            features["volatility_60"] = 0.0
 
         # RSI (1 feature)
-        features["rsi_14"] = self._calculate_rsi(df["close"].values, current_idx)
+        features["rsi_14"] = self._calculate_rsi(close_series.values, current_idx)
 
-        # Bollinger Bands (2 features)
+        # Bollinger Bands (2 features) - reuse window
         if current_idx >= 20:
             bb_period = 20
             bb_std = 2
-            bb_middle = df.iloc[current_idx - bb_period:current_idx + 1]["close"].mean()
-            bb_std_val = df.iloc[current_idx - bb_period:current_idx + 1]["close"].std()
+            close_window_bb = close_series.iloc[current_idx - bb_period:current_idx + 1]
+            bb_middle = float(close_window_bb.mean())
+            bb_std_val = float(close_window_bb.std())
             bb_upper = bb_middle + bb_std * bb_std_val
             bb_lower = bb_middle - bb_std * bb_std_val
-            features["bb_percent"] = (current["close"] - bb_lower) / (bb_upper - bb_lower) if bb_upper > bb_lower else 0.5
-            features["bb_width"] = (bb_upper - bb_lower) / bb_middle if bb_middle > 0 else 0
+            bb_range = bb_upper - bb_lower
+            features["bb_percent"] = (current_close - bb_lower) / bb_range if bb_range > 0 else 0.5
+            features["bb_width"] = bb_range / bb_middle if bb_middle > 0 else 0.0
         else:
             features["bb_percent"] = 0.5
-            features["bb_width"] = 0
+            features["bb_width"] = 0.0
 
-        # Volume features (3 features)
+        # Volume features (3 features) - reuse window
         if current_idx >= 20:
-            features["volume_ma_20"] = df.iloc[current_idx - 20:current_idx + 1]["volume"].mean()
-            features["volume_ratio"] = current["volume"] / features["volume_ma_20"] if features["volume_ma_20"] > 0 else 1
+            volume_window_20 = df["volume"].iloc[current_idx - 20:current_idx + 1]
+            volume_ma_20 = float(volume_window_20.mean())
+            features["volume_ma_20"] = volume_ma_20
+            features["volume_ratio"] = current["volume"] / volume_ma_20 if volume_ma_20 > 0 else 1.0
         else:
             features["volume_ma_20"] = current["volume"]
-            features["volume_ratio"] = 1
+            features["volume_ratio"] = 1.0
 
         if current_idx >= 5:
-            features["volume_change_5"] = (current["volume"] - df.iloc[current_idx - 5]["volume"]) / df.iloc[current_idx - 5]["volume"] if df.iloc[current_idx - 5]["volume"] > 0 else 0
+            vol_5_ago = df["volume"].iloc[current_idx - 5]
+            features["volume_change_5"] = (current["volume"] - vol_5_ago) / vol_5_ago if vol_5_ago > 0 else 0.0
         else:
-            features["volume_change_5"] = 0
+            features["volume_change_5"] = 0.0
 
         return features
 
@@ -474,24 +523,33 @@ class TrainingDataBuilder:
 
     def __init__(
         self,
-        feature_window,
-        sample_step,
-        horizons,
-        min_trades,
+        feature_window: int,
+        sample_step: int,
+        horizons: list[int],
+        min_trades: int,
+        enable_parallel: bool = False,
+        profile: bool = False,
     ):
         self.feature_window = feature_window
         self.sample_step = sample_step
         self.horizons = horizons
         self.min_trades = min_trades
+        self.enable_parallel = enable_parallel
+        self.profile = profile
         self.addr_extractor = AddressFeatureExtractor(feature_window)
         self.market_extractor = MarketFeatureExtractor()
+
+        # Prebuild feature order for vectorized assembly
+        dummy_addr = self.addr_extractor._zero_features()
+        dummy_market = self.market_extractor._zero_features()
+        self.feature_order = list(dummy_addr.keys()) + list(dummy_market.keys())
+        self.addr_feature_count = len(dummy_addr)
 
     def build_samples(
         self,
         trades: list[Trade],
         candles_1m: list[Candle],
         coin: str,
-        end_time: int,
     ) -> list[TrainingSample]:
         """
         Build training samples using sliding window.
@@ -501,8 +559,26 @@ class TrainingDataBuilder:
         2. Extract address features
         3. Extract market features
         4. Calculate future returns for each horizon
+
+        Optimizations:
+        - Precompute market features per timestamp (avoid re-extraction)
+        - Use sliding window over sorted trades instead of per-iter filtering
+        - Vectorize feature assembly using prebuilt feature order
         """
         samples = []
+
+        # Timing accumulators for profiling
+        timings = {
+            "prep": 0.0,
+            "market_cache": 0.0,
+            "trades_group": 0.0,
+            "loop": 0.0,
+            "window_trades": 0.0,
+            "addr_extract": 0.0,
+            "feature_assembly": 0.0,
+            "targets": 0.0,
+        }
+        t0 = time.time()
 
         # Build timestamp -> price mapping
         candles_by_ts = {c.t: c for c in candles_1m}
@@ -512,44 +588,113 @@ class TrainingDataBuilder:
         max_horizon = max(self.horizons)
         start_idx = int(self.feature_window / MINUTE) + 1  # Buffer for feature window
 
-        logger.info(f"Building samples for {coin}: {len(all_timestamps)} candles, start_idx={start_idx}, max_horizon={max_horizon // (HOUR)}h")
+        logger.info(f"Building samples for {coin}: {len(all_timestamps)} candles, start_idx={start_idx}, max_horizon={max_horizon // (MINUTE)}m")
 
-        for i in tqdm(range(start_idx, len(all_timestamps) - max_horizon / MINUTE - 1), desc=f"Processing {coin}"):
+        # OPTIMIZATION 1: Precompute market features per timestamp
+        t_cache = time.time()
+        market_features_cache: dict[int, dict[str, float]] = {}
+        for ts in all_timestamps:
+            market_features_cache[ts] = self.market_extractor.extract(candles_1m, ts)
+        timings["market_cache"] = time.time() - t_cache
+
+        # OPTIMIZATION 2: Sort trades by timestamp and group by address upfront
+        t_group = time.time()
+        trades_sorted = sorted(trades, key=lambda t: t.timestamp)
+
+        # Group trades by address, maintaining sorted order
+        addr_trades_sorted: dict[str, list[Trade]] = {}
+        for tr in trades_sorted:
+            if tr.taker not in addr_trades_sorted:
+                addr_trades_sorted[tr.taker] = []
+            addr_trades_sorted[tr.taker].append(tr)
+        timings["trades_group"] = time.time() - t_group
+
+        timings["prep"] = time.time() - t0
+        t_loop = time.time()
+
+        # Pre-allocate numpy arrays for feature vectors (optional optimization)
+        # We'll still use lists for samples as we don't know count upfront
+
+        # Calculate step in minutes for the range
+        step_minutes = self.sample_step // MINUTE
+
+        for i in tqdm(range(start_idx, len(all_timestamps) - max_horizon // MINUTE - 1, step_minutes), desc=f"Processing {coin}"):
+            iter_t0 = time.time()
+
             t_ms = all_timestamps[i]
             t_sec = t_ms // 1000
+            window_start = t_sec - self.feature_window
 
             # Current price
             current_candle = candles_by_ts[t_ms]
             current_price = current_candle.c
 
-            # Get trades in feature window
-            window_start = t_sec - self.feature_window
-            window_trades = [
-                tr for tr in trades
-                if window_start <= tr.timestamp < t_sec
-            ]
+            # OPTIMIZATION 3: Use sliding window instead of full filter
+            # Build per-address trade windows using binary search + slice
+            t_window = time.time()
 
-            # Group by address
-            addr_trades: dict[str, list[Trade]] = {}
-            for tr in window_trades:
-                if tr.taker not in addr_trades:
-                    addr_trades[tr.taker] = []
-                addr_trades[tr.taker].append(tr)
+            active_addresses: list[str] = []
+            addr_windows: dict[str, list[Trade]] = {}
 
-            # Only process addresses with enough trades
-            for addr, addr_trade_list in addr_trades.items():
-                if len(addr_trade_list) < self.min_trades:
-                    continue
+            for addr, addr_trade_list in addr_trades_sorted.items():
+                # Binary search for window boundaries (trades are sorted)
+                left = 0
+                right = len(addr_trade_list)
 
-                # Extract features
+                # Find left bound (first trade >= window_start)
+                while left < right:
+                    mid = (left + right) // 2
+                    if addr_trade_list[mid].timestamp < window_start:
+                        left = mid + 1
+                    else:
+                        right = mid
+
+                start_idx_trades = left
+
+                # Find right bound (first trade >= t_sec)
+                left = start_idx_trades
+                right = len(addr_trade_list)
+                while left < right:
+                    mid = (left + right) // 2
+                    if addr_trade_list[mid].timestamp < t_sec:
+                        left = mid + 1
+                    else:
+                        right = mid
+
+                end_idx_trades = left
+
+                window_trades = addr_trade_list[start_idx_trades:end_idx_trades]
+
+                if len(window_trades) >= self.min_trades:
+                    active_addresses.append(addr)
+                    addr_windows[addr] = window_trades
+
+            timings["window_trades"] += time.time() - t_window
+
+            # Extract features for active addresses
+            t_extract = time.time()
+
+            # Get cached market features for this timestamp
+            market_features = market_features_cache[t_ms]
+
+            for addr in active_addresses:
+                addr_trade_list = addr_windows[addr]
+
+                # Extract address features
                 addr_features = self.addr_extractor.extract(addr_trade_list, current_price)
-                market_features = self.market_extractor.extract(candles_1m, t_ms)
 
-                # Combine features
-                all_features = {**addr_features, **market_features}
-                feature_vector = np.array(list(all_features.values()), dtype=np.float32)
+                # OPTIMIZATION 4: Vectorized feature assembly
+                t_assemble = time.time()
+                feature_vector = np.empty(len(self.feature_order), dtype=np.float32)
+                for idx, key in enumerate(self.feature_order):
+                    if idx < self.addr_feature_count:
+                        feature_vector[idx] = addr_features[key]
+                    else:
+                        feature_vector[idx] = market_features[key]
+                timings["feature_assembly"] += time.time() - t_assemble
 
                 # Calculate targets (future returns)
+                t_targets = time.time()
                 targets = {}
                 valid_sample = True
 
@@ -567,6 +712,8 @@ class TrainingDataBuilder:
                     ret = (future_price - current_price) / current_price if current_price > 0 else 0
                     targets[f"return_{horizon_sec}s"] = ret
 
+                timings["targets"] += time.time() - t_targets
+
                 if valid_sample:
                     samples.append(TrainingSample(
                         timestamp=t_sec,
@@ -576,7 +723,17 @@ class TrainingDataBuilder:
                         coin=coin,
                     ))
 
-        logger.info(f"Generated {len(samples)} samples for {coin}")
+            timings["loop"] += time.time() - iter_t0
+
+        total_time = time.time() - t0
+        logger.info(f"Generated {len(samples)} samples for {coin} in {total_time:.2f}s")
+
+        if self.profile:
+            logger.info("=== Profile timings ===")
+            for name, val in timings.items():
+                pct = val / total_time * 100 if total_time > 0 else 0
+                logger.info(f"  {name}: {val:.3f}s ({pct:.1f}%)")
+
         return samples
 
     def _find_future_candle(
@@ -607,10 +764,8 @@ class PricePredictionDataset(Dataset):
         self,
         samples: list[TrainingSample],
         feature_scaler: Optional[StandardScaler] = None,
-        target_scaler: Optional[StandardScaler] = None,
         horizons: Optional[list[int]] = None,
         quantiles: Optional[list[float]] = None,
-        fit_scalers: bool = False,
     ):
         self.samples = samples
         self.horizons = horizons or [300, 3600, 14400, 43200, 86400, 604800, 1209600]
@@ -622,10 +777,7 @@ class PricePredictionDataset(Dataset):
         # Initialize or fit feature scaler
         if feature_scaler is None:
             self.feature_scaler = StandardScaler()
-            if fit_scalers:
-                self.feature_scaler.fit(features)
-            else:
-                self.feature_scaler.fit(features)
+            self.feature_scaler.fit(features)
         else:
             self.feature_scaler = feature_scaler
 
@@ -654,7 +806,9 @@ class QuantileLoss(nn.Module):
 
     def __init__(self, quantiles: Optional[list[float]] = None):
         super().__init__()
-        self.quantiles = torch.tensor(quantiles or [0.1, 0.5, 0.9])
+        # Register quantiles as buffer - they'll move with the model and won't be treated as parameters
+        quantile_list = quantiles or [0.1, 0.5, 0.9]
+        self.register_buffer('quantiles', torch.tensor(quantile_list, dtype=torch.float32))
 
     def forward(
         self,
@@ -670,11 +824,12 @@ class QuantileLoss(nn.Module):
         targets_expanded = targets.expand(-1, len(self.quantiles))
 
         errors = targets_expanded - predictions
-        quantiles_device = self.quantiles.to(predictions.device)
+        # Quantiles are already on the correct device via register_buffer
+        quantiles = self.quantiles.to(predictions.device)
 
         losses = torch.max(
-            quantiles_device * errors,
-            (quantiles_device - 1) * errors
+            quantiles * errors,
+            (quantiles - 1) * errors
         )
 
         return losses.mean()
@@ -752,6 +907,8 @@ class Trainer:
         quantiles: list[float],
         learning_rate: float = 1e-3,
         device: str = "cpu",
+        enable_amp: bool = False,
+        enable_compile: bool = False,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -759,6 +916,20 @@ class Trainer:
         self.horizons = horizons
         self.quantiles = quantiles
         self.device = device
+        self.enable_amp = enable_amp and device in ("mps", "cuda")
+
+        # Log device configuration
+        logger.info(f"Using device: {device}")
+        if self.enable_amp:
+            logger.info(f"AMP (Automatic Mixed Precision) enabled for {device}")
+
+        # Optional torch.compile for PyTorch 2.0+
+        if enable_compile:
+            try:
+                self.model = torch.compile(self.model)
+                logger.info("Model compiled with torch.compile")
+            except Exception as e:
+                logger.warning(f"torch.compile not available: {e}")
 
         self.criterion = QuantileLoss(quantiles)
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -769,6 +940,9 @@ class Trainer:
         self.best_val_loss = float('inf')
         self.patience_counter = 0
 
+        # AMP GradScaler for mixed precision training
+        self.scaler = torch.GradScaler() if self.enable_amp else None
+
     def train_epoch(self) -> float:
         """Train for one epoch."""
         self.model.train()
@@ -776,26 +950,39 @@ class Trainer:
         num_batches = 0
 
         for features, targets_dict in self.train_loader:
-            features = features.to(self.device)
-            targets_dict = {k: v.to(self.device) for k, v in targets_dict.items()}
+            features = features.to(self.device, non_blocking=True)
+            targets_dict = {k: v.to(self.device, non_blocking=True) for k, v in targets_dict.items()}
 
             self.optimizer.zero_grad()
 
-            # Forward pass
-            predictions = self.model(features)
+            if self.enable_amp and self.scaler is not None:
+                # AMP forward pass
+                with torch.autocast(device_type=self.device):
+                    predictions = self.model(features)
+                    loss = 0
+                    for h in self.horizons:
+                        pred_h = predictions[h]
+                        target_h = targets_dict[h]
+                        loss += self.criterion(pred_h, target_h)
+                    loss = loss / len(self.horizons)
 
-            # Calculate loss for each horizon
-            loss = 0
-            for h in self.horizons:
-                pred_h = predictions[h]  # [batch, num_quantiles]
-                target_h = targets_dict[h]  # [batch, 1]
-                loss += self.criterion(pred_h, target_h)
+                # AMP backward pass
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                # Standard forward pass
+                predictions = self.model(features)
+                loss = 0
+                for h in self.horizons:
+                    pred_h = predictions[h]
+                    target_h = targets_dict[h]
+                    loss += self.criterion(pred_h, target_h)
+                loss = loss / len(self.horizons)
 
-            loss = loss / len(self.horizons)
-
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
+                # Standard backward pass
+                loss.backward()
+                self.optimizer.step()
 
             total_loss += loss.item()
             num_batches += 1
@@ -810,18 +997,26 @@ class Trainer:
 
         with torch.no_grad():
             for features, targets_dict in self.val_loader:
-                features = features.to(self.device)
-                targets_dict = {k: v.to(self.device) for k, v in targets_dict.items()}
+                features = features.to(self.device, non_blocking=True)
+                targets_dict = {k: v.to(self.device, non_blocking=True) for k, v in targets_dict.items()}
 
-                predictions = self.model(features)
-
-                loss = 0
-                for h in self.horizons:
-                    pred_h = predictions[h]
-                    target_h = targets_dict[h]
-                    loss += self.criterion(pred_h, target_h)
-
-                loss = loss / len(self.horizons)
+                if self.enable_amp:
+                    with torch.autocast(device_type=self.device):
+                        predictions = self.model(features)
+                        loss = 0
+                        for h in self.horizons:
+                            pred_h = predictions[h]
+                            target_h = targets_dict[h]
+                            loss += self.criterion(pred_h, target_h)
+                        loss = loss / len(self.horizons)
+                else:
+                    predictions = self.model(features)
+                    loss = 0
+                    for h in self.horizons:
+                        pred_h = predictions[h]
+                        target_h = targets_dict[h]
+                        loss += self.criterion(pred_h, target_h)
+                    loss = loss / len(self.horizons)
 
                 total_loss += loss.item()
                 num_batches += 1
@@ -1001,8 +1196,307 @@ def load_data(
     return all_trades, all_candles
 
 
-def main():
+# =============================================================================
+# Verification Pipeline
+# =============================================================================
+
+def verify_model() -> None:
+    """
+    Run verification on hold-out data and save results for dashboard.
+
+    Generates verify_results.json with:
+    - Per-sample predictions and actuals
+    - Aggregated metrics by horizon
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    logger.info("=" * 60)
+    logger.info("Verification Pipeline")
+    logger.info("=" * 60)
+
+    # Load verification candles
+    verify_dir = Path("./temp-data/verify-candles")
+    results = {}
+    run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+    for coin in CONFIG["coins"]:
+        logger.info(f"Verifying {coin}...")
+
+        # Load verification candles
+        verify_files = list(verify_dir.glob(f"{coin}_1m_candles_*.json"))
+        if not verify_files:
+            logger.warning(f"No verify candles found for {coin}")
+            continue
+
+        with verify_files[0].open("r") as f:
+            candle_data = json.load(f)
+        verify_candles = [Candle.from_dict(c) for c in candle_data]
+        logger.info(f"Loaded {len(verify_candles)} verify candles for {coin}")
+
+        # Load trained model
+        model_path = CONFIG["model_path"]
+        if not model_path.exists():
+            logger.error(f"Model not found at {model_path}. Please train first.")
+            return
+
+        # Create a dummy sample to get the correct feature dimension
+        market_extractor = MarketFeatureExtractor()
+        addr_extractor = AddressFeatureExtractor(CONFIG["feature_window"])
+        dummy_addr_features = addr_extractor._zero_features()
+
+        # Use the first candle to extract market features and get feature dim
+        if verify_candles:
+            first_ts = verify_candles[0].t
+            dummy_market_features = market_extractor.extract(verify_candles, first_ts)
+            all_features = {**dummy_addr_features, **dummy_market_features}
+            feature_dim = len(all_features)  # Total number of features
+        else:
+            feature_dim = 80  # Fallback
+
+        model = MultiTaskQuantileModel(
+            input_dim=feature_dim,
+            hidden_dims=CONFIG["hidden_dims"],
+            horizons=CONFIG["horizons"],
+            quantiles=CONFIG["quantiles"],
+            dropout=CONFIG["dropout"],
+        )
+
+        model.load_state_dict(torch.load(model_path, map_location=CONFIG["device"]))
+        model.to(CONFIG["device"])
+        model.eval()
+
+        # Load feature scaler from training
+        scaler_path = Path("./temp-data/feature_scaler.pkl")
+        if scaler_path.exists():
+            feature_scaler = joblib.load(scaler_path)
+            logger.info(f"Loaded feature scaler from {scaler_path}")
+            logger.info(f"  Scaler feature dim: {len(feature_scaler.mean_)}")
+            logger.info(f"  Current feature dim: {feature_dim}")
+
+            # Check if dimensions match
+            if len(feature_scaler.mean_) != feature_dim:
+                logger.warning(f"Feature dimension mismatch! Scaler: {len(feature_scaler.mean_)}, Model: {feature_dim}")
+                logger.warning(f"This will cause prediction errors. Need to retrain or adjust features.")
+        else:
+            logger.warning(f"Feature scaler not found at {scaler_path}")
+            logger.warning("Using dummy scaler (zero mean, unit variance) - predictions will be inaccurate!")
+            feature_scaler = StandardScaler()
+            feature_scaler.mean_ = np.zeros(feature_dim)
+            feature_scaler.scale_ = np.ones(feature_dim)
+
+        # Build verify samples
+        builder = TrainingDataBuilder(
+            feature_window=CONFIG["feature_window"],
+            sample_step=CONFIG["sample_step"],
+            horizons=CONFIG["horizons"],
+            min_trades=CONFIG["min_trades_per_address"],
+            enable_parallel=CONFIG["enable_parallel_sample_building"],
+            profile=CONFIG["profile_sample_building"],
+        )
+
+        # Note: We need trades for verification too, but since we're evaluating
+        # on market data, we'll use a simplified approach
+        samples = []
+        candles_by_ts = {c.t: c for c in verify_candles}
+        all_timestamps = sorted(candles_by_ts.keys())
+
+        max_horizon = max(CONFIG["horizons"])
+        start_idx = int(CONFIG["feature_window"] / MINUTE) + 1
+
+        # Precompute market features cache for efficiency
+        market_features_cache: dict[int, dict[str, float]] = {}
+        for ts in all_timestamps:
+            market_features_cache[ts] = market_extractor.extract(verify_candles, ts)
+
+        # Calculate step in minutes for the range
+        step_minutes = builder.sample_step // MINUTE
+
+        logger.info(f"Generating verification samples for {coin}...")
+        for i in tqdm(range(start_idx, len(all_timestamps) - max_horizon // MINUTE - 1, step_minutes), desc=f"Verify {coin}"):
+            t_ms = all_timestamps[i]
+            t_sec = t_ms // 1000
+
+            current_candle = candles_by_ts[t_ms]
+            current_price = current_candle.c
+
+            # Get cached market features for this timestamp
+            market_features = market_features_cache[t_ms]
+
+            # Combine features using the same order as TrainingDataBuilder
+            feature_vector = np.empty(len(builder.feature_order), dtype=np.float32)
+            for idx, key in enumerate(builder.feature_order):
+                if idx < builder.addr_feature_count:
+                    feature_vector[idx] = dummy_addr_features[key]
+                else:
+                    feature_vector[idx] = market_features[key]
+
+            # Calculate targets
+            targets = {}
+            valid_sample = True
+
+            for horizon_sec in CONFIG["horizons"]:
+                future_t_ms = t_ms + horizon_sec * 1000
+                future_candle = builder._find_future_candle(all_timestamps, candles_by_ts, future_t_ms)
+
+                if future_candle is None:
+                    valid_sample = False
+                    break
+
+                future_price = future_candle.c
+                ret = (future_price - current_price) / current_price if current_price > 0 else 0
+                targets[f"return_{horizon_sec}s"] = ret
+
+            if valid_sample:
+                samples.append(TrainingSample(
+                    timestamp=t_sec,
+                    address="market_only",
+                    features=feature_vector,
+                    targets=targets,
+                    coin=coin,
+                ))
+
+        logger.info(f"Generated {len(samples)} verification samples for {coin}")
+
+        if len(samples) == 0:
+            logger.warning(f"No samples generated for {coin}")
+            continue
+
+        # Get quantile indices dynamically for robustness
+        quantiles = CONFIG["quantiles"]
+        p10_idx = quantiles.index(0.1) if 0.1 in quantiles else None
+        p50_idx = quantiles.index(0.5) if 0.5 in quantiles else None
+        p90_idx = quantiles.index(0.9) if 0.9 in quantiles else None
+
+        # Get predictions
+        all_predictions = {h: [] for h in CONFIG["horizons"]}
+        all_targets = {h: [] for h in CONFIG["horizons"]}
+
+        sample_list = []
+        model.eval()
+
+        with torch.no_grad():
+            for sample in samples:
+                features = torch.FloatTensor(feature_scaler.transform(sample.features.reshape(1, -1))).to(CONFIG["device"])
+                pred_dict = model(features)
+
+                sample_data = {
+                    "timestamp": sample.timestamp,
+                    "open": None,  # Will fill from candle
+                    "high": None,
+                    "low": None,
+                    "close": None,
+                    "volume": None,
+                    "targets": {},
+                    "predictions": {},
+                }
+
+                # Get candle data
+                if sample.timestamp * 1000 in candles_by_ts:
+                    c = candles_by_ts[sample.timestamp * 1000]
+                    sample_data["open"] = c.o
+                    sample_data["high"] = c.h
+                    sample_data["low"] = c.l
+                    sample_data["close"] = c.c
+                    sample_data["volume"] = c.v
+
+                for h in CONFIG["horizons"]:
+                    h_key = f"return_{h}s"
+                    pred = pred_dict[h][0].cpu().numpy()  # [num_quantiles]
+
+                    sample_data["targets"][h_key] = sample.targets[h_key]
+                    sample_data["predictions"][h_key] = {
+                        "p10": float(pred[p10_idx]) if p10_idx is not None else None,
+                        "p50": float(pred[p50_idx]) if p50_idx is not None else None,
+                        "p90": float(pred[p90_idx]) if p90_idx is not None else None,
+                    }
+
+                    all_predictions[h].append(pred)
+                    all_targets[h].append(sample.targets[h_key])
+
+                sample_list.append(sample_data)
+
+        # Calculate metrics
+        metrics = {}
+        metrics["run_id"] = run_id
+        metrics["generated_at"] = int(time.time())
+        metrics["coin"] = coin
+        metrics["metrics"] = {}
+
+        for h in CONFIG["horizons"]:
+            pred_h = np.array(all_predictions[h])  # [N, num_quantiles]
+            target_h = np.array(all_targets[h])    # [N]
+
+            h_metrics = {}
+
+            # Pinball loss per quantile
+            for i, q in enumerate(CONFIG["quantiles"]):
+                errors = target_h - pred_h[:, i]
+                loss = np.mean(np.maximum(q * errors, (q - 1) * errors))
+                h_metrics[f"pinball_p{int(q*100)}"] = float(loss)
+
+            # Direction accuracy
+            if p50_idx is not None:
+                pred_median = pred_h[:, p50_idx]
+                actual_direction = target_h > 0
+                pred_direction = pred_median > 0
+                accuracy = np.mean(actual_direction == pred_direction)
+                h_metrics["direction_accuracy"] = float(accuracy)
+            else:
+                h_metrics["direction_accuracy"] = None
+
+            h_metrics["sample_count"] = len(target_h)
+
+            # Coverage
+            if p10_idx is not None and p90_idx is not None:
+                in_interval = (target_h >= pred_h[:, p10_idx]) & (target_h <= pred_h[:, p90_idx])
+                coverage = np.mean(in_interval)
+                h_metrics["coverage_p10_p90"] = float(coverage)
+            else:
+                h_metrics["coverage_p10_p90"] = None
+
+            metrics["metrics"][f"horizon_{h}"] = h_metrics
+
+        results[coin] = {
+            "run_id": run_id,
+            "generated_at": int(time.time()),
+            "metrics": metrics["metrics"],
+            "samples": sample_list,
+        }
+
+        logger.info(f"Verification complete for {coin}")
+        for h in CONFIG["horizons"]:
+            h_m = metrics["metrics"].get(f"horizon_{h}", {})
+            pinball = h_m.get('pinball_p50', None)
+            dir_acc = h_m.get('direction_accuracy', None)
+            coverage = h_m.get('coverage_p10_p90', None)
+
+            log_parts = [f"Horizon {h}s:"]
+            if pinball is not None:
+                log_parts.append(f"Pinball={pinball:.6f}")
+            if dir_acc is not None:
+                log_parts.append(f"DirAcc={dir_acc:.4f}")
+            if coverage is not None:
+                log_parts.append(f"Coverage={coverage:.4f}")
+
+            logger.info(f"  {' '.join(log_parts)}")
+
+    # Save results
+    verify_results_path = Path("./temp-data/verify_results.json")
+    with verify_results_path.open("w") as f:
+        json.dump(results, f, indent=2)
+
+    logger.info("=" * 60)
+    logger.info(f"Verification results saved to {verify_results_path}")
+    logger.info("=" * 60)
+
+
+def main(verify_only: bool = False):
     """Main training pipeline."""
+
+    if verify_only:
+        verify_model()
+        return
 
     logger.info("=" * 60)
     logger.info("Multi-Task Quantile Regression Training Pipeline")
@@ -1025,19 +1519,17 @@ def main():
         sample_step=CONFIG["sample_step"],
         horizons=CONFIG["horizons"],
         min_trades=CONFIG["min_trades_per_address"],
+        enable_parallel=CONFIG["enable_parallel_sample_building"],
+        profile=CONFIG["profile_sample_building"],
     )
 
     all_samples = []
     for coin in CONFIG["coins"]:
         if coin in all_trades and coin in all_candles:
-            # Get end time from candles
-            end_time = all_candles[coin][-1].T // 1000
-
             samples = builder.build_samples(
                 trades=all_trades[coin],
                 candles_1m=all_candles[coin],
                 coin=coin,
-                end_time=end_time,
             )
             all_samples.extend(samples)
 
@@ -1087,24 +1579,35 @@ def main():
         quantiles=CONFIG["quantiles"],
     )
 
-    # Create data loaders
+    # Create data loaders with MPS-optimized settings
+    pin_memory = CONFIG["pin_memory"] and CONFIG["device"] in ("mps", "cuda")
+    persistent_workers = CONFIG["persistent_workers"] and CONFIG["num_workers"] > 0
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=CONFIG["batch_size"],
         shuffle=True,
-        num_workers=0,
+        num_workers=CONFIG["num_workers"],
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=CONFIG["batch_size"],
         shuffle=False,
+        num_workers=CONFIG["num_workers"],
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=CONFIG["batch_size"],
         shuffle=False,
+        num_workers=CONFIG["num_workers"],
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
 
     # Create model
@@ -1131,6 +1634,8 @@ def main():
         quantiles=CONFIG["quantiles"],
         learning_rate=CONFIG["learning_rate"],
         device=CONFIG["device"],
+        enable_amp=CONFIG["enable_amp"],
+        enable_compile=CONFIG["enable_compile"],
     )
 
     history = trainer.train(
@@ -1180,6 +1685,16 @@ def main():
         json.dump(history, f, indent=2)
     logger.info(f"Training history saved to {history_path}")
 
+    # Save feature scaler for verification
+    scaler_path = Path("./temp-data/feature_scaler.pkl")
+    joblib.dump(feature_scaler, scaler_path)
+    logger.info(f"Feature scaler saved to {scaler_path}")
+
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verify-only", action="store_true", help="Only run verification, skip training")
+    args = parser.parse_args()
+
+    main(verify_only=args.verify_only)

@@ -603,6 +603,180 @@ async def get_chain_data(
     return result
 
 
+@app.get("/api/profit")
+async def get_profit(
+    coin: str = Query(..., description="Coin symbol (e.g., BTC, ETH, SOL)"),
+    horizon: int = Query(300, description="Horizon in seconds"),
+    time_range: str = Query("24h", description="Time range filter"),
+) -> dict[str, Any]:
+    """
+    Compute band-based trading PnL from verification results.
+
+    Uses a simple strategy:
+    - LONG if both p10 > 0 and p90 > 0 (strong bullish signal)
+    - SHORT if both p10 < 0 and p90 < 0 (strong bearish signal)
+    - FLAT otherwise (uncertain signal)
+
+    Returns time series of cumulative PnL and summary statistics.
+    """
+    # Load verification results
+    if not VERIFY_RESULTS_PATH.exists():
+        raise HTTPException(status_code=404, detail="No verification results found. Run verification first.")
+
+    with VERIFY_RESULTS_PATH.open("r") as f:
+        verify_data = json.load(f)
+
+    # Handle nested structure: { "BTC": { "samples": [...] } }
+    if coin in verify_data:
+        coin_data = verify_data[coin]
+        samples = coin_data.get("samples", [])
+    else:
+        # If coin not found, try to use first available coin
+        first_coin = next(iter(verify_data.keys()), None)
+        if first_coin and "samples" in verify_data[first_coin]:
+            samples = verify_data[first_coin].get("samples", [])
+        else:
+            # Fallback: assume verify_data is the samples array directly
+            samples = verify_data if isinstance(verify_data, list) else []
+
+    if not samples:
+        raise HTTPException(status_code=404, detail=f"No verification samples found for {coin}")
+
+    # Parse time range
+    range_seconds = {
+        "1h": 3600,
+        "6h": 6 * 3600,
+        "24h": 24 * 3600,
+        "48h": 48 * 3600,
+        "all": float('inf'),
+    }
+    cutoff = time.time() - range_seconds.get(time_range, 24 * 3600)
+
+    # Get the horizon key
+    h_key = f"return_{horizon}s"
+
+    # Build PnL time series
+    trades = []
+    cumulative_pnl = 0.0
+    equity_curve = []
+
+    for sample in samples:
+        ts = sample.get("timestamp", 0)
+        if ts < cutoff:
+            continue
+
+        close_price = sample.get("close", 0)
+        if close_price <= 0:
+            continue
+
+        # Get predictions for this horizon
+        preds = sample.get("predictions", {}).get(h_key, {})
+        if not preds:
+            continue
+
+        p10 = preds.get("p10", 0)
+        p50 = preds.get("p50", 0)
+        p90 = preds.get("p90", 0)
+
+        # Get actual return
+        targets = sample.get("targets", {})
+        actual_return = targets.get(h_key, 0)
+
+        # Generate signal
+        signal = 0  # flat
+        if p10 > 0 and p90 > 0:
+            signal = 1  # long
+        elif p10 < 0 and p90 < 0:
+            signal = -1  # short
+
+        # Only track actual trades (non-flat signals)
+        if signal != 0:
+            # Calculate PnL
+            trade_return = signal * actual_return
+            cumulative_pnl += trade_return
+
+            trades.append({
+                "entry_time": ts,
+                "exit_time": ts + horizon,  # Approximate exit time
+                "position": "LONG" if signal == 1 else "SHORT",
+                "entry_price": close_price,
+                "exit_price": close_price * (1 + actual_return),  # Approximate exit price
+                "return_pct": trade_return,
+            })
+
+            equity_curve.append({
+                "timestamp": ts,
+                "equity_pct": cumulative_pnl,  # Frontend expects equity_pct
+            })
+
+    # Calculate summary statistics
+    if not trades:
+        return {
+            "coin": coin,
+            "horizon_sec": horizon,
+            "time_range": time_range,
+            "trades": [],
+            "equity_curve": [],
+            "summary": {
+                "total_pnl_pct": 0.0,
+                "total_trades": 0,
+                "win_rate": 0.0,
+                "max_drawdown_pct": 0.0,
+                "sharpe_ratio": 0.0,
+            }
+        }
+
+    # Add starting point to equity curve
+    if equity_curve:
+        first_timestamp = equity_curve[0]["timestamp"]
+        equity_curve.insert(0, {
+            "timestamp": first_timestamp - horizon,
+            "equity_pct": 0.0,
+        })
+
+    # Count winning/losing trades
+    winning_trades = sum(1 for t in trades if t["return_pct"] > 0)
+    total_trades = len(trades)
+    win_rate = winning_trades / total_trades if total_trades > 0 else 0
+
+    # Calculate max drawdown
+    peak = 0.0  # Start at 0 (initial equity)
+    max_drawdown = 0.0
+    for point in equity_curve:
+        if point["equity_pct"] > peak:
+            peak = point["equity_pct"]
+        drawdown = peak - point["equity_pct"]  # Absolute drawdown
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+
+    # Calculate Sharpe ratio (simplified, assuming 252 trading days per year)
+    # For simplicity, we'll use the standard deviation of returns
+    returns = [t["return_pct"] for t in trades]
+    if len(returns) > 1:
+        returns_std = np.std(returns)
+        returns_mean = np.mean(returns)
+        sharpe_ratio = (returns_mean / returns_std) * np.sqrt(252) if returns_std > 0 else 0
+    else:
+        sharpe_ratio = 0
+
+    summary = {
+        "total_pnl_pct": cumulative_pnl * 100,
+        "total_trades": total_trades,
+        "win_rate": win_rate * 100,
+        "max_drawdown_pct": max_drawdown * 100,
+        "sharpe_ratio": sharpe_ratio,
+    }
+
+    return {
+        "coin": coin,
+        "horizon_sec": horizon,
+        "time_range": time_range,
+        "trades": trades,
+        "equity_curve": equity_curve,
+        "summary": summary,
+    }
+
+
 # =============================================================================
 # Serve Dashboard
 # =============================================================================

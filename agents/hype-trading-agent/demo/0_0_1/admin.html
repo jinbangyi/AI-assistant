@@ -323,6 +323,11 @@
                 <h3>Direction Accuracy & Coverage</h3>
                 <canvas id="accuracyChart"></canvas>
             </div>
+
+            <div class="chart-container">
+                <h3>Trading Strategy PnL</h3>
+                <canvas id="profitChart"></canvas>
+            </div>
         </div>
 
         <div class="table-container">
@@ -352,6 +357,7 @@
         let pricePredictionChart = null;
         let pinballChart = null;
         let accuracyChart = null;
+        let profitChart = null;
         let appConfig = { coins: [], horizons: [] };
 
         // Chart colors
@@ -450,6 +456,7 @@
                 await Promise.all([
                     loadMetrics(),
                     loadKline(),
+                    loadProfit(),
                 ]);
                 document.getElementById('lastUpdated').textContent = new Date().toLocaleString();
             } catch (error) {
@@ -508,6 +515,16 @@
                     <div class="value">${horizonMetrics.sample_count.toLocaleString()}</div>
                     <div class="subtext">Horizon: ${horizonMetrics.horizon_label}</div>
                 </div>
+                <div class="metric-card" id="profitPnlCard">
+                    <h3>Total PnL</h3>
+                    <div class="value" id="profitPnlValue">--</div>
+                    <div class="subtext">Band-based strategy</div>
+                </div>
+                <div class="metric-card" id="profitWinRateCard">
+                    <h3>Win Rate</h3>
+                    <div class="value" id="profitWinRateValue">--</div>
+                    <div class="subtext" id="profitTradesSubtext">-- trades</div>
+                </div>
             `;
 
             // Update recent samples table
@@ -549,6 +566,170 @@
 
             updateKlineChart(data);
             updatePricePredictionChart(coin, horizon, range);
+        }
+
+        async function loadProfit() {
+            const coin = getCoin();
+            const horizon = getHorizon();
+            const range = getRange();
+
+            try {
+                const data = await fetchAPI('/api/profit', { coin, horizon, time_range: range });
+
+                // Update profit metric cards
+                const pnlCard = document.getElementById('profitPnlCard');
+                const pnlValue = document.getElementById('profitPnlValue');
+                const winRateValue = document.getElementById('profitWinRateValue');
+                const tradesSubtext = document.getElementById('profitTradesSubtext');
+
+                if (data.summary) {
+                    const s = data.summary;
+                    // Update PnL card
+                    pnlValue.textContent = (s.total_pnl_pct >= 0 ? '+' : '') + s.total_pnl_pct.toFixed(2) + '%';
+                    pnlCard.className = 'metric-card ' + (s.total_pnl_pct >= 0 ? 'good' : 'bad');
+
+                    // Update win rate card
+                    winRateValue.textContent = s.win_rate.toFixed(1) + '%';
+                    tradesSubtext.textContent = s.total_trades + ' trades';
+
+                    // Drawdown card
+                    const drawdownCard = document.getElementById('profitDrawdownCard');
+                    if (drawdownCard) {
+                        const drawdownValue = document.getElementById('profitDrawdownValue');
+                        drawdownValue.textContent = s.max_drawdown_pct.toFixed(2) + '%';
+                    }
+                }
+
+                // Update profit chart
+                updateProfitChart(data);
+            } catch (error) {
+                console.error('Error loading profit data:', error);
+                // Set default values
+                const pnlValue = document.getElementById('profitPnlValue');
+                const winRateValue = document.getElementById('profitWinRateValue');
+                if (pnlValue) pnlValue.textContent = '--';
+                if (winRateValue) winRateValue.textContent = '--';
+            }
+        }
+
+        function updateProfitChart(data) {
+            const ctx = document.getElementById('profitChart').getContext('2d');
+
+            // Handle empty data
+            if (!data || !data.equity_curve || data.equity_curve.length === 0) {
+                console.warn('updateProfitChart: No data available');
+                return;
+            }
+
+            const equityCurve = data.equity_curve;
+
+            // Build datasets for equity curve and trades
+            const labels = equityCurve.map(d => d.timestamp * 1000);
+            const equityData = equityCurve.map(d => d.equity_pct * 100); // Convert to percentage
+
+            // Generate per-trade return data for bar chart
+            const tradeReturns = [];
+            const tradeLabels = [];
+            if (data.trades && data.trades.length > 0) {
+                for (const trade of data.trades) {
+                    if (trade.return_pct !== 0) {
+                        tradeReturns.push({
+                            x: trade.entry_time * 1000,
+                            y: trade.return_pct * 100
+                        });
+                    }
+                }
+            }
+
+            // Destroy existing chart
+            if (profitChart) {
+                profitChart.destroy();
+                profitChart = null;
+            }
+
+            profitChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Cumulative PnL (%)',
+                            data: labels.map((ts, i) => ({ x: ts, y: equityData[i] })),
+                            borderColor: colors.price,
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            tension: 0.1,
+                            fill: true,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Trade Return (%)',
+                            data: tradeReturns,
+                            type: 'bar',
+                            backgroundColor: tradeReturns.map(t => t.y >= 0 ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+                            borderColor: tradeReturns.map(t => t.y >= 0 ? '#22c55e' : '#ef4444'),
+                            borderWidth: 1,
+                            yAxisID: 'y1',
+                            order: 2,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index',
+                    },
+                    plugins: {
+                        legend: {
+                            labels: { color: colors.text },
+                            display: true,
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    if (ctx.dataset.label === 'Cumulative PnL (%)') {
+                                        return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}%`;
+                                    } else {
+                                        return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)}%`;
+                                    }
+                                },
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            grid: { color: colors.grid },
+                            ticks: { color: colors.text },
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            grid: { color: colors.grid },
+                            ticks: { color: colors.text, callback: (v) => v.toFixed(1) + '%' },
+                            title: {
+                                display: true,
+                                text: 'Cumulative PnL (%)',
+                                color: colors.text,
+                            },
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            ticks: { color: colors.text, callback: (v) => v.toFixed(2) + '%' },
+                            title: {
+                                display: true,
+                                text: 'Trade Return (%)',
+                                color: colors.text,
+                            },
+                        },
+                    },
+                },
+            });
         }
 
         function updateKlineChart(data) {

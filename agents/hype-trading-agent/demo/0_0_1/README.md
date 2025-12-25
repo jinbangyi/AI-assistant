@@ -92,18 +92,40 @@ The dashboard will be available at:
 
 ### Analytics Display
 
-- **Price Chart with Prediction Bands**: Visualize actual prices with P10/P50/P90 predictions
-- **Return Distribution**: Scatter plot of actual vs predicted returns
-- **Pinball Loss**: Loss metrics by quantile across horizons
+- **Price with Prediction Bands**: Shows verification data with actual price and P10/P50/P90 predicted return bands. The predictions are for the future time window (timestamp + horizon), calculated as: `predicted_price = current_price * (1 + predicted_return)`.
+- **Price Prediction (Actual vs Predicted)**: Compares chain data (full actual prices) with verify data (predicted prices from model). Uses two data sources:
+  - Actual Price (Chain): Full price history from verify candles
+  - P10/P50/P90: Predicted future prices from verification samples only
+- **Pinball Loss**: Loss metrics by quantile across horizons - measures quantile regression accuracy
 - **Direction Accuracy & Coverage**: Model performance metrics
+- **Trading Strategy PnL**: Band-based trading strategy profit visualization with:
+  - Cumulative PnL line chart showing equity curve over time
+  - Per-trade return bars (green for wins, red for losses)
+  - Summary cards showing total PnL and win rate
 - **Recent Samples Table**: Individual prediction samples with outcomes
+
+### Understanding Prediction Bands
+
+The P10/P50/P90 values represent **predicted returns** for a future time window:
+
+- **P10 (10th percentile)**: 10% probability that actual return will be below this value
+- **P50 (Median)**: 50% probability that actual return will be below this value
+- **P90 (90th percentile)**: 90% probability that actual return will be below this value
+
+**Example with 5-minute horizon:**
+- At 12:00:00, current price is $88,000
+- Model predicts: P10=-0.2%, P50=+0.1%, P90=+0.4%
+- Predicted prices for 12:05:00:
+  - P10: $88,000 × (1 - 0.002) = $87,824
+  - P50: $88,000 × (1 + 0.001) = $88,088
+  - P90: $88,000 × (1 + 0.004) = $88,352
 
 ### Controls
 
-- **Coin Selector**: Switch between BTC, ETH, SOL
-- **Horizon Selector**: Choose prediction horizon (5m, 15m, 30m, 1h)
+- **Coin Selector**: Dynamically loaded from main.py CONFIG (BTC, ETH, SOL, etc.)
+- **Horizon Selector**: Dynamically loaded from main.py CONFIG (1m, 5m, 10m, 15m, etc.)
 - **Time Range**: Filter data by time window (1h, 6h, 24h, 48h, all)
-- **Show Bands**: Toggle prediction band visualization
+- **Show Bands**: Toggle prediction band visualization (affects "Price with Prediction Bands" chart)
 - **Refresh**: Reload data from API
 - **Recompute**: Trigger verification pipeline
 - **Export**: Download predictions as CSV
@@ -132,12 +154,99 @@ Get k-line data with predicted quantile bands.
     "low": 97800.0,
     "close": 98200.0,
     "volume": 1234.56,
-    "actual_return": 0.005,
     "p10": -0.002,
     "p50": 0.003,
     "p90": 0.008
   }
 ]
+```
+
+**Note:** The `p10`, `p50`, `p90` values are predicted **returns** for the future time window (timestamp + horizon), not the current price. To get predicted future prices, multiply: `predicted_price = close * (1 + pX)`.
+
+### `GET /api/chain-data`
+Get chain data (actual prices from verify candles) for comparison.
+
+**Query Parameters:**
+- `coin` (required): Coin symbol
+- `horizon` (optional): Horizon in seconds (default: 300)
+- `time_range` (optional): Time range filter (default: 24h)
+
+**Response:**
+```json
+[
+  {
+    "timestamp": 1766473200,
+    "open": 98000.0,
+    "high": 98500.0,
+    "low": 97800.0,
+    "close": 98200.0,
+    "volume": 1234.56
+  }
+]
+```
+
+### `GET /api/profit`
+Get band-based trading strategy profit analysis.
+
+**Trading Strategy:**
+- **LONG**: Enter when `p10 > 0` AND `p90 > 0` (both bands predict positive return)
+- **SHORT**: Enter when `p10 < 0` AND `p90 < 0` (both bands predict negative return)
+- **FLAT**: No position when bands disagree (mixed signals)
+
+**Query Parameters:**
+- `coin` (required): Coin symbol
+- `horizon` (optional): Horizon in seconds (default: 300)
+- `time_range` (optional): Time range filter (default: 24h)
+
+**Response:**
+```json
+{
+  "coin": "BTC",
+  "horizon_sec": 300,
+  "summary": {
+    "total_pnl_pct": 2.34,
+    "total_trades": 42,
+    "win_rate": 58.5,
+    "max_drawdown_pct": -1.23,
+    "sharpe_ratio": 1.85
+  },
+  "trades": [
+    {
+      "entry_time": 1766473200,
+      "exit_time": 1766473500,
+      "position": "LONG",
+      "entry_price": 98000.0,
+      "exit_price": 98500.0,
+      "return_pct": 0.51
+    }
+  ],
+  "equity_curve": [
+    {
+      "timestamp": 1766473200,
+      "equity_pct": 0.0
+    },
+    {
+      "timestamp": 1766473500,
+      "equity_pct": 0.51
+    }
+  ]
+}
+```
+
+### `GET /api/config`
+Get model configuration from main.py.
+
+**Response:**
+```json
+{
+  "coins": ["BTC"],
+  "horizons": [
+    {"value": 60, "label": "1m"},
+    {"value": 300, "label": "5m"},
+    {"value": 600, "label": "10m"},
+    {"value": 900, "label": "15m"}
+  ]
+}
 ```
 
 ### `GET /api/metrics`

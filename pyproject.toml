@@ -15,4 +15,9 @@ dependencies = [
     "hyperliquid-python-sdk>=0.21.0",
     "loguru>=0.7.3",
     "psycopg2-binary>=2.9.11",
+    "numpy>=2.4.0",
+    "torch>=2.9.1",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.8.0",
+    "tqdm>=4.67.1",
 ]

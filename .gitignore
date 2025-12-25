@@ -7,3 +7,4 @@ debug/
 __pycache__/
 /core
 temp-data/
+best_model.pt

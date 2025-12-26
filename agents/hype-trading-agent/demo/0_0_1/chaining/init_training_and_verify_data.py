@@ -19,9 +19,10 @@ DAY = 24 * HOUR
 
 DB_URL = os.environ.get("TRADES_DB_URL", DEFAULT_DB_URL)
 TRADES_SCHEMA = os.environ.get("TRADES_SCHEMA", "hyperliquid_continuous")
-coin_list = ["BTC", "ETH", "SOL"]
+# coin_list = ["BTC", "ETH", "SOL"]
+coin_list = ["BTC"]
 # data_window_size = 3 * DAY  # 3 days in seconds
-data_window_size = DAY
+data_window_size = 2 * DAY
 kline_intervals = ["1m", "5m", "15m", "1h"]
 
 info = Info(constants.MAINNET_API_URL, skip_ws=True)

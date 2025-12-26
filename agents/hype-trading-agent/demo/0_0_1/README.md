@@ -15,9 +15,11 @@ This module implements a training pipeline that:
 
 ```
 demo/0_0_1/
-├── main.py                          # Training pipeline
-├── init_training_and_verify_data.py # Data initialization script
-├── verify_api.py                    # FastAPI server for dashboard
+├── chaining/                        # Training and data initialization
+│   ├── main.py                      # Training pipeline
+│   └── init_training_and_verify_data.py # Data initialization script
+├── verifying/                       # Verification and analytics
+│   └── verify_api.py                # FastAPI server for dashboard
 ├── admin.html                       # Verification analytics dashboard
 ├── best_model.pt                    # Trained model checkpoint
 ├── temp-data/                       # Data directory
@@ -26,6 +28,15 @@ demo/0_0_1/
 │   ├── trades/                      # Trade data
 │   ├── training_history.json        # Training loss history
 │   └── verify_results.json          # Verification predictions & metrics
+├── fix_scripts_and_history/         # Bug fixes and diagnostic scripts
+│   ├── BUGS_AND_FIXES.md            # Bug fix history
+│   ├── diagnose_model.py            # Model diagnostic utilities
+│   └── fix_verify.py                # Verification fix scripts
+├── plan_history/                    # Planning and documentation
+│   ├── plan.md                      # Original implementation plan
+│   ├── plan-supplement.md           # Supplementary planning docs
+│   └── data-source-schema.md        # Data source schema documentation
+├── update-readme.sh                 # Helper script to update README
 └── README.md                        # This file
 ```
 
@@ -52,7 +63,7 @@ pip install -e /path/to/AI-assistant
 Fetch training and verification data from Hyperliquid API and database:
 
 ```bash
-python init_training_and_verify_data.py
+python chaining/init_training_and_verify_data.py
 ```
 
 This creates:
@@ -65,7 +76,7 @@ This creates:
 Run the training pipeline:
 
 ```bash
-python main.py
+python chaining/main.py
 ```
 
 This will:
@@ -74,14 +85,14 @@ This will:
 - Save the best model to `best_model.pt`
 - Save training history to `temp-data/training_history.json`
 
-**Note:** The model currently supports BTC. To add ETH/SOL, modify the `coins` list in `main.py`.
+**Note:** The model currently supports BTC. To add ETH/SOL, modify the `coins` list in `chaining/main.py`.
 
 ### Step 3: Run Verification Dashboard
 
 Start the FastAPI server:
 
 ```bash
-python verify_api.py
+python verifying/verify_api.py
 ```
 
 The dashboard will be available at:
@@ -331,20 +342,21 @@ Get training history for loss curve visualization.
 ### Features
 
 **Address-Level Features (20):**
-- Trade activity: count, total volume, avg/max size, std size, frequency
-- Directionality: net volume, buy/sell ratio, buy/sell volume
+- Trade activity: count, gross volume, avg size, max size, std size, frequency
+- Directionality: net volume, net volume ratio, buy volume, sell volume, buy ratio
 - Position changes: delta position
-- Behavior patterns: first/last side, side switches
-- Price interaction: above VWAP ratio, price change, volatility
+- Behavior patterns: first side, last side, side switches, side switch ratio
+- Price interaction: above VWAP ratio, price change, price volatility
 - Whale indicator
 
-**Market Features (23):**
-- OHLCV: open, high, low, close, volume
-- Returns: 1m, 5m, 15m, 1h
-- Moving averages: MA20, MA50, price vs MA
-- Volatility: 20-period, 60-period
-- Technical: RSI-14, Bollinger Bands
-- Volume: MA20, ratio, 5-period change
+**Market Features (21):**
+- OHLCV: current price, open, high, low, volume (5)
+- Returns: 1m, 5m, 15m, 1h (4)
+- Moving averages: MA20, price vs MA20, MA50, price vs MA50 (4)
+- Volatility: 20-period, 60-period (2)
+- Technical: RSI-14 (1)
+- Bollinger Bands: percent, width (2)
+- Volume: MA20, ratio, 5-period change (3)
 
 ### Model
 
@@ -363,14 +375,14 @@ Multi-task MLP with:
 
 ## Configuration
 
-Edit `main.py` to modify:
+Edit `chaining/main.py` to modify:
 
 ```python
 CONFIG = {
     "coins": ["BTC"],  # Add "ETH", "SOL" as needed
     "feature_window": 60 * MINUTE,  # Feature extraction window
     "sample_step": 5 * MINUTE,  # Sliding window step
-    "horizons": [5*MINUTE, 15*MINUTE, 30*MINUTE],  # Prediction horizons
+    "horizons": [MINUTE, 5*MINUTE, 10*MINUTE, 15*MINUTE],  # Prediction horizons
     "quantiles": [0.1, 0.5, 0.9],  # Quantiles to predict
     "batch_size": 256,
     "learning_rate": 1e-3,
@@ -405,15 +417,56 @@ Ensure `verify_results.json` exists in `temp-data/`. Run verification to generat
 
 ### Adding new coins
 
-1. Add coin symbol to `coins` list in both `main.py` and `init_training_and_verify_data.py`
+1. Add coin symbol to `coins` list in both `chaining/main.py` and `chaining/init_training_and_verify_data.py`
 2. Run data initialization
 3. Retrain the model
 
 ### Adding new horizons
 
-1. Add horizon to `horizons` list in `CONFIG`
+1. Add horizon to `horizons` list in `CONFIG` in `chaining/main.py`
 2. Retrain the model
 3. Update dashboard horizon selector in `admin.html`
+
+## AI Coding Assistant Workflow
+
+This project follows rules defined in `README.AI.md` for AI-assisted development:
+
+### Core Rule
+**Always update `./README.md` when making changes to the demo.**
+
+### Update Helper
+Use the provided script to remind yourself to update documentation:
+
+```bash
+# After making changes, run:
+./update-readme.sh "Added feature X"
+
+# Or manually edit:
+vi README.md
+```
+
+### What to Update
+When modifying the demo, update these sections of README.md:
+
+| Change Type | Sections to Update |
+|-------------|-------------------|
+| New files/directories | Project Structure |
+| CONFIG changes (coins, horizons) | Configuration, API Endpoints (`/api/config`) |
+| Feature modifications | Model Architecture → Features |
+| New API endpoints | API Endpoints |
+| Training pipeline changes | Quick Start, Model Architecture |
+| Dashboard changes | Dashboard Features, Controls |
+
+### Example Claude Commands
+For AI assistants (Claude Code, etc.), use these commands:
+
+```
+# Update README after code changes
+"Read README.AI.md for rules, then update README.md based on recent changes"
+
+# Verify documentation is in sync
+"Check if README.md matches the actual code in main.py and verify_api.py"
+```
 
 ## License
 
